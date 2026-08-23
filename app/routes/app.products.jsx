@@ -310,9 +310,7 @@ export default function Products() {
   
   const [queryValue, setQueryValue] = useState(q || "");
   const [statusValue, setStatusValue] = useState(status || "ALL");
-  const [exportUrl, setExportUrl] = useState(null);
-  const [isExporting, setIsExporting] = useState(false);
-  
+
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [isImporting, setIsImporting] = useState(false);
@@ -334,30 +332,23 @@ export default function Products() {
   // current selection) and the System Check modal's per-issue export links (always a
   // full-catalog scan for that issue, regardless of what's selected/on-screen, since
   // this page only ever loads the first 50 matching products).
-  const handleExport = async ({ useSelection = false, issue = null } = {}) => {
-    try {
-      setIsExporting(true);
-      let url = '/api/export';
-      const params = new URLSearchParams();
-      if (useSelection && selectedVariants.length > 0) {
-        params.set('variantIds', JSON.stringify(selectedVariants));
-      }
-      if (issue) params.set('issue', issue);
-      if ([...params].length > 0) url += `?${params.toString()}`;
-
-      const res = await fetch(url);
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(text || 'Export failed');
-      }
-      const blob = await res.blob();
-      const objectUrl = window.URL.createObjectURL(blob);
-      setExportUrl(objectUrl);
-    } catch (err) {
-      shopify.toast.show(err.message, { isError: true });
-    } finally {
-      setIsExporting(false);
+  //
+  // Opens the export URL directly in a new top-level tab rather than fetching a blob
+  // and triggering an <a download> click from inside the embedded admin iframe - that
+  // pattern is a well-known Shopify embedded-app gotcha: browsers routinely block
+  // blob-URL downloads triggered from inside a sandboxed cross-origin iframe, silently
+  // (no error, nothing happens). A new top-level tab isn't sandboxed, and the server
+  // already sends Content-Disposition: attachment, so the browser downloads it natively.
+  const handleExport = ({ useSelection = false, issue = null } = {}) => {
+    let url = '/api/export';
+    const params = new URLSearchParams();
+    if (useSelection && selectedVariants.length > 0) {
+      params.set('variantIds', JSON.stringify(selectedVariants));
     }
+    if (issue) params.set('issue', issue);
+    if ([...params].length > 0) url += `?${params.toString()}`;
+
+    window.open(url, '_blank');
   };
 
   const runSystemCheck = () => {
@@ -569,7 +560,6 @@ export default function Products() {
         {
           content: 'Export to CSV',
           icon: ExportIcon,
-          loading: isExporting,
           onAction: () => handleExport({ useSelection: true }),
         }
       ]}
@@ -614,26 +604,9 @@ export default function Products() {
       </Modal>
 
       <Modal
-        open={!!exportUrl}
-        onClose={() => setExportUrl(null)}
-        title="Export Ready"
-        primaryAction={{
-          content: 'Download CSV',
-          url: exportUrl,
-          download: `products_export_${new Date().toISOString().split('T')[0]}.csv`,
-          onAction: () => setExportUrl(null)
-        }}
-      >
-        <Modal.Section>
-          <Text as="p">Your CSV file has been generated securely and is ready to download.</Text>
-        </Modal.Section>
-      </Modal>
-
-      <Modal
         open={progressModal.open}
         onClose={() => {}}
         title={progressModal.title}
-        loading={true}
       >
         <Modal.Section>
           <BlockStack gap="400">
@@ -707,7 +680,6 @@ export default function Products() {
                   <Button
                     size="micro"
                     icon={ExportIcon}
-                    loading={isExporting}
                     onClick={() => handleExport({ issue: "missing_weight" })}
                   >
                     Export list
@@ -726,7 +698,6 @@ export default function Products() {
                   <Button
                     size="micro"
                     icon={ExportIcon}
-                    loading={isExporting}
                     onClick={() => handleExport({ issue: "missing_backup" })}
                   >
                     Export list
