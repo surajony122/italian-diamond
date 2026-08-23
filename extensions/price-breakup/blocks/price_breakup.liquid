@@ -1,19 +1,27 @@
 {% assign breakdown_json = product.selected_or_first_available_variant.metafields.custom.price_breakdown %}
 
+{% comment %} Defaults to shown when the merchant hasn't saved a Pricing Rules preference yet (metafield absent). {% endcomment %}
+{% assign show_comparison = true %}
+{% if shop.metafields.custom.show_price_comparison != blank %}
+  {% assign show_comparison = shop.metafields.custom.show_price_comparison.value %}
+{% endif %}
+
 {% if breakdown_json %}
   {% assign breakdown = breakdown_json.value %}
   {% assign uid = block.id | replace: '_', '' | downcase %}
 
   <div class="app-price-breakdown-wrapper" style="background-color: #faf9f6; border-radius: 12px; padding: 20px; font-family: sans-serif; color: #333; max-width: 400px; margin: 15px 0;">
 
-    <div style="display: flex; background-color: white; border-radius: 20px; padding: 4px; margin-bottom: 20px;">
-      <button type="button" id="apb-tab-breakup-{{ uid }}" class="apb-tab apb-tab-active" style="flex: 1; text-align: center; background-color: #8c5a4f; color: white; padding: 10px 0; border-radius: 16px; font-weight: bold; font-size: 14px; border: none; cursor: pointer;">
-        Price Breakup
-      </button>
-      <button type="button" id="apb-tab-comparison-{{ uid }}" class="apb-tab" style="flex: 1; text-align: center; background: none; color: #888; padding: 10px 0; font-weight: 500; font-size: 14px; border: none; cursor: pointer;">
-        Price Comparison
-      </button>
-    </div>
+    {% if show_comparison %}
+      <div style="display: flex; background-color: white; border-radius: 20px; padding: 4px; margin-bottom: 20px;">
+        <button type="button" id="apb-tab-breakup-{{ uid }}" class="apb-tab apb-tab-active" style="flex: 1; text-align: center; background-color: #8c5a4f; color: white; padding: 10px 0; border-radius: 16px; font-weight: bold; font-size: 14px; border: none; cursor: pointer;">
+          Price Breakup
+        </button>
+        <button type="button" id="apb-tab-comparison-{{ uid }}" class="apb-tab" style="flex: 1; text-align: center; background: none; color: #888; padding: 10px 0; font-weight: 500; font-size: 14px; border: none; cursor: pointer;">
+          Price Comparison
+        </button>
+      </div>
+    {% endif %}
 
     <div id="apb-panel-breakup-{{ uid }}" class="apb-panel">
       <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
@@ -59,63 +67,65 @@
       </div>
     </div>
 
-    <div id="apb-panel-comparison-{{ uid }}" class="apb-panel" style="display: none;">
-      <div style="font-size: 12px; color: #888; margin-bottom: 15px;">
-        Gold is priced at the live market rate - no markup there. The savings below are on making charges and diamond price only.
-      </div>
+    {% if show_comparison %}
+      <div id="apb-panel-comparison-{{ uid }}" class="apb-panel" style="display: none;">
+        <div style="font-size: 12px; color: #888; margin-bottom: 15px;">
+          Gold is priced at the live market rate - no markup there. The savings below are on making charges and diamond price only.
+        </div>
 
-      <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
-        <div>{{ breakdown.settings.karat }} Gold</div>
-        <div style="text-align: right;">
-          <div style="font-weight: 600;">₹{{ breakdown.goldValue }}</div>
-          <div style="font-size: 11px; color: #888;">Market rate, no markup</div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+          <div>{{ breakdown.settings.karat }} Gold</div>
+          <div style="text-align: right;">
+            <div style="font-weight: 600;">₹{{ breakdown.goldValue }}</div>
+            <div style="font-size: 11px; color: #888;">Market rate, no markup</div>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+          <div>Making Charges</div>
+          <div style="text-align: right;">
+            {% if breakdown.makingChargesCompareAt %}
+              <div>
+                <span style="text-decoration: line-through; color: #999; font-size: 12px;">₹{{ breakdown.makingChargesCompareAt }}</span>
+                <span style="font-weight: 600;"> ₹{{ breakdown.makingCharges }}</span>
+              </div>
+              <div style="font-size: 11px; color: #2e7d32;">You save ₹{{ breakdown.makingChargesSavings }}</div>
+            {% else %}
+              <div style="font-weight: 600;">₹{{ breakdown.makingCharges }}</div>
+            {% endif %}
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+          <div>Diamond Price</div>
+          <div style="text-align: right;">
+            {% if breakdown.diamondPriceCompareAt %}
+              <div>
+                <span style="text-decoration: line-through; color: #999; font-size: 12px;">₹{{ breakdown.diamondPriceCompareAt }}</span>
+                <span style="font-weight: 600;"> ₹{{ breakdown.diamondPrice }}</span>
+              </div>
+              <div style="font-size: 11px; color: #2e7d32;">You save ₹{{ breakdown.diamondSavings }}</div>
+            {% else %}
+              <div style="font-weight: 600;">₹{{ breakdown.diamondPrice }}</div>
+            {% endif %}
+          </div>
+        </div>
+
+        <div style="border-top: 1px solid #eaeaea; padding-top: 15px; display: flex; justify-content: space-between; font-size: 16px; color: #000;">
+          <div style="font-weight: bold;">Total</div>
+          <div style="text-align: right;">
+            {% if breakdown.compareAtPrice %}
+              <div>
+                <span style="text-decoration: line-through; color: #999; font-size: 13px;">₹{{ breakdown.compareAtPrice }}</span>
+                <span style="font-weight: bold;"> ₹{{ breakdown.finalPrice }}</span>
+              </div>
+            {% else %}
+              <div style="font-weight: bold;">₹{{ breakdown.finalPrice }}</div>
+            {% endif %}
+          </div>
         </div>
       </div>
-
-      <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
-        <div>Making Charges</div>
-        <div style="text-align: right;">
-          {% if breakdown.makingChargesCompareAt %}
-            <div>
-              <span style="text-decoration: line-through; color: #999; font-size: 12px;">₹{{ breakdown.makingChargesCompareAt }}</span>
-              <span style="font-weight: 600;"> ₹{{ breakdown.makingCharges }}</span>
-            </div>
-            <div style="font-size: 11px; color: #2e7d32;">You save ₹{{ breakdown.makingChargesSavings }}</div>
-          {% else %}
-            <div style="font-weight: 600;">₹{{ breakdown.makingCharges }}</div>
-          {% endif %}
-        </div>
-      </div>
-
-      <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
-        <div>Diamond Price</div>
-        <div style="text-align: right;">
-          {% if breakdown.diamondPriceCompareAt %}
-            <div>
-              <span style="text-decoration: line-through; color: #999; font-size: 12px;">₹{{ breakdown.diamondPriceCompareAt }}</span>
-              <span style="font-weight: 600;"> ₹{{ breakdown.diamondPrice }}</span>
-            </div>
-            <div style="font-size: 11px; color: #2e7d32;">You save ₹{{ breakdown.diamondSavings }}</div>
-          {% else %}
-            <div style="font-weight: 600;">₹{{ breakdown.diamondPrice }}</div>
-          {% endif %}
-        </div>
-      </div>
-
-      <div style="border-top: 1px solid #eaeaea; padding-top: 15px; display: flex; justify-content: space-between; font-size: 16px; color: #000;">
-        <div style="font-weight: bold;">Total</div>
-        <div style="text-align: right;">
-          {% if breakdown.compareAtPrice %}
-            <div>
-              <span style="text-decoration: line-through; color: #999; font-size: 13px;">₹{{ breakdown.compareAtPrice }}</span>
-              <span style="font-weight: bold;"> ₹{{ breakdown.finalPrice }}</span>
-            </div>
-          {% else %}
-            <div style="font-weight: bold;">₹{{ breakdown.finalPrice }}</div>
-          {% endif %}
-        </div>
-      </div>
-    </div>
+    {% endif %}
 
   </div>
 
@@ -136,7 +146,7 @@
         otherPanel.style.display = 'none';
       }
 
-      if (tabBreakup && tabComparison) {
+      if (tabBreakup && tabComparison && panelBreakup && panelComparison) {
         tabBreakup.addEventListener('click', function() {
           activate(tabBreakup, panelBreakup, tabComparison, panelComparison);
         });

@@ -319,7 +319,13 @@ export default function Products() {
   const [isImporting, setIsImporting] = useState(false);
   
   // Progress Bar State
-  const [progressModal, setProgressModal] = useState({ open: false, title: "", processed: 0 });
+  const [progressModal, setProgressModal] = useState({
+    open: false,
+    title: "",
+    processedProducts: 0,
+    totalProducts: null,   // null until the first response tells us (real total, not a guess)
+    variantsProcessed: 0,
+  });
   
   // System Check State
   const [isSystemCheckModalOpen, setIsSystemCheckModalOpen] = useState(false);
@@ -340,29 +346,42 @@ export default function Products() {
   };
   
   const startProgressTask = async (endpoint, title) => {
-    setProgressModal({ open: true, title, processed: 0 });
+    setProgressModal({ open: true, title, processedProducts: 0, totalProducts: null, variantsProcessed: 0 });
     let hasNextPage = true;
     let cursor = null;
-    let totalProcessed = 0;
-    
+    let variantsProcessed = 0;
+    let totalProducts = null;
+    const seenProductIds = new Set(); // dedupes across pages so a product isn't double-counted
+
     try {
       while (hasNextPage) {
         const formData = new FormData();
         if (cursor) formData.append("cursor", cursor);
-        
+
         const res = await fetch(endpoint, {
           method: "POST",
           body: formData
         });
-        
+
         if (!res.ok) throw new Error("Server error");
         const data = await res.json();
-        
+
         if (!data.success) throw new Error(data.error || "Task failed");
-        
-        totalProcessed += data.variantsProcessed;
-        setProgressModal({ open: true, title, processed: totalProcessed });
-        
+
+        variantsProcessed += data.variantsProcessed;
+        if (data.totalProducts != null) totalProducts = data.totalProducts;
+        if (Array.isArray(data.productIds)) {
+          for (const id of data.productIds) seenProductIds.add(id);
+        }
+
+        setProgressModal({
+          open: true,
+          title,
+          processedProducts: seenProductIds.size,
+          totalProducts,
+          variantsProcessed,
+        });
+
         hasNextPage = data.hasNextPage;
         cursor = data.nextCursor;
       }
@@ -606,10 +625,28 @@ export default function Products() {
         <Modal.Section>
           <BlockStack gap="400">
             <Text as="p">Please keep this tab open while the operation completes.</Text>
-            <ProgressBar progress={Math.min((progressModal.processed / (progressModal.processed + 25)) * 100, 95)} size="small" tone="primary" />
-            <Text as="p" alignment="center">
-              Processed: {progressModal.processed} variants
-            </Text>
+            {progressModal.totalProducts ? (
+              <>
+                <ProgressBar
+                  progress={Math.min((progressModal.processedProducts / progressModal.totalProducts) * 100, 100)}
+                  size="small"
+                  tone="primary"
+                />
+                <Text as="p" alignment="center">
+                  {progressModal.processedProducts} / {progressModal.totalProducts} products
+                  {" "}({Math.round((progressModal.processedProducts / progressModal.totalProducts) * 100)}%)
+                </Text>
+              </>
+            ) : (
+              <>
+                {/* Endpoints that don't report a total (e.g. Backup Original Prices) fall back
+                    to an indeterminate-feeling bar rather than claiming a false percentage. */}
+                <ProgressBar progress={Math.min((progressModal.variantsProcessed / (progressModal.variantsProcessed + 25)) * 100, 95)} size="small" tone="primary" />
+                <Text as="p" alignment="center">
+                  Processed: {progressModal.variantsProcessed} variants
+                </Text>
+              </>
+            )}
           </BlockStack>
         </Modal.Section>
       </Modal>

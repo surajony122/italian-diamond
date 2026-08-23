@@ -20,11 +20,27 @@ export const action = async ({ request }) => {
       reason: "Bulk API Chunk"
     });
 
+    // Only fetch the total on the first call (cursor null) - the frontend caches it for
+    // the rest of the run so the real-time progress bar has an actual denominator
+    // ("X of Y products") instead of guessing at a fake percentage.
+    let totalProducts = null;
+    if (!cursor) {
+      try {
+        const countRes = await admin.graphql(`query { productsCount { count } }`);
+        const countData = await countRes.json();
+        totalProducts = countData.data.productsCount.count;
+      } catch (e) {
+        console.error("Failed to fetch productsCount:", e);
+      }
+    }
+
     return new Response(JSON.stringify({
       success: true,
       hasNextPage: result.hasNextPage,
       nextCursor: result.nextCursor,
-      variantsProcessed: result.variantsProcessed
+      variantsProcessed: result.variantsProcessed,
+      productIds: result.productIds,
+      totalProducts
     }), { headers: { "Content-Type": "application/json" } });
 
   } catch (error) {

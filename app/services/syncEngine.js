@@ -229,11 +229,17 @@ export async function syncVariantPage(admin, appSettings, { cursor = null, pageS
     await prisma.auditLog.createMany({ data: auditLogs });
   }
 
+  // Distinct product IDs seen in this page (not just the ones that changed price) - lets
+  // the caller track "N of M products scanned" across the whole paginated sync, since
+  // the pagination itself walks variants, not products.
+  const productIds = [...new Set(variants.map(edge => edge.node.product.id))];
+
   return {
     hasNextPage: data.data.productVariants.pageInfo.hasNextPage,
     nextCursor: data.data.productVariants.pageInfo.endCursor,
     variantsProcessed,
-    syncedCount: variantsToUpdate.length
+    syncedCount: variantsToUpdate.length,
+    productIds
   };
 }
 

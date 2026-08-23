@@ -13,6 +13,7 @@ import {
   Button,
   Icon,
   Banner,
+  Checkbox,
 } from "@shopify/polaris";
 import { DeleteIcon, PlusIcon } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
@@ -30,7 +31,7 @@ export const loader = async ({ request }) => {
 };
 
 export const action = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
 
@@ -45,6 +46,7 @@ export const action = async ({ request }) => {
     const gstRaw = formData.get("gstPercentage");
     const defaultMarkupRaw = formData.get("defaultShapeMarkupPercent");
     const shapeMarkupsRaw = formData.get("shapeMarkups");
+    const showPriceComparison = formData.get("showPriceComparison") === "true";
 
     const diamondBasePrice = diamondBaseRaw ? parseFloat(diamondBaseRaw) : NaN;
     const makingChargePerGram = makingRaw ? parseFloat(makingRaw) : NaN;
@@ -58,7 +60,7 @@ export const action = async ({ request }) => {
       return { success: false, message: "Invalid shape markup data - not saved." };
     }
 
-    const dataToUpdate = {};
+    const dataToUpdate = { showPriceComparison };
     if (!isNaN(diamondBasePrice)) dataToUpdate.diamondBasePrice = diamondBasePrice;
     if (!isNaN(makingChargePerGram)) dataToUpdate.makingChargePerGram = makingChargePerGram;
     if (!isNaN(gstPercentage)) dataToUpdate.gstPercentage = gstPercentage;
@@ -69,6 +71,34 @@ export const action = async ({ request }) => {
       where: { shop: session.shop },
       data: dataToUpdate,
     });
+
+    // Mirror the on/off flag onto a shop-level metafield - the Liquid extension can only
+    // read Shopify data, not this app's own database, so this is how it finds out.
+    try {
+      const shopRes = await admin.graphql(`query { shop { id } }`);
+      const shopData = await shopRes.json();
+      const shopId = shopData.data.shop.id;
+
+      await admin.graphql(`
+        mutation setShopMetafields($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) {
+            userErrors { field message }
+          }
+        }
+      `, {
+        variables: {
+          metafields: [{
+            ownerId: shopId,
+            namespace: "custom",
+            key: "show_price_comparison",
+            type: "boolean",
+            value: showPriceComparison.toString()
+          }]
+        }
+      });
+    } catch (e) {
+      console.error("Failed to sync show_price_comparison metafield:", e);
+    }
 
     return { success: true, settings, message: "Pricing rules saved. Run a sync for these to take effect on your products." };
   }
@@ -96,6 +126,7 @@ export default function PricingRules() {
   const [defaultShapeMarkupPercent, setDefaultShapeMarkupPercent] = useState(
     settings.defaultShapeMarkupPercent?.toString() || "25"
   );
+  const [showPriceComparison, setShowPriceComparison] = useState(settings.showPriceComparison ?? true);
 
   // shapeMarkups (a { shapeName: percent } map) as an editable list of rows
   const [shapeRows, setShapeRows] = useState(() => {
@@ -130,6 +161,7 @@ export default function PricingRules() {
     formData.append("gstPercentage", gstPercentage);
     formData.append("defaultShapeMarkupPercent", defaultShapeMarkupPercent);
     formData.append("shapeMarkups", JSON.stringify(shapeMarkups));
+    formData.append("showPriceComparison", showPriceComparison.toString());
     fetcher.submit(formData, { method: "POST" });
   };
 
@@ -271,6 +303,18 @@ export default function PricingRules() {
                     helpText={`Effective rate: ₹${(baseRate * (1 + (parseFloat(defaultShapeMarkupPercent) || 0) / 100)).toFixed(2)}/ct`}
                   />
                 </div>
+              </BlockStack>
+            </Card>
+
+            <Card>
+              <BlockStack gap="200">
+                <Text variant="headingMd" as="h2">Storefront Display</Text>
+                <Checkbox
+                  label="Show the &quot;Price Comparison&quot; tab on the storefront"
+                  checked={showPriceComparison}
+                  onChange={setShowPriceComparison}
+                  helpText='When off, the storefront price block only shows "Price Breakup" - no compare-at/savings tab.'
+                />
               </BlockStack>
             </Card>
 

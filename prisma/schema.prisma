@@ -48,6 +48,10 @@ model AppSettings {
   // Default seeds Round/Emerald at 0% to match the original hardcoded behavior.
   shapeMarkups              Json     @default("{\"round\": 0, \"emerald\": 0}")
   defaultShapeMarkupPercent Float    @default(25.0)
+  // Mirrored onto a shop-level metafield (custom.show_price_comparison) whenever this
+  // changes, since the storefront extension is Liquid and can only read Shopify data,
+  // not this database directly.
+  showPriceComparison Boolean  @default(true)
   lastSyncTime        DateTime?
 }
 
