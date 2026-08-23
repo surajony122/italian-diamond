@@ -2,70 +2,158 @@
 
 {% if breakdown_json %}
   {% assign breakdown = breakdown_json.value %}
+  {% assign uid = block.id | replace: '_', '' | downcase %}
+
   <div class="app-price-breakdown-wrapper" style="background-color: #faf9f6; border-radius: 12px; padding: 20px; font-family: sans-serif; color: #333; max-width: 400px; margin: 15px 0;">
-    
+
     <div style="display: flex; background-color: white; border-radius: 20px; padding: 4px; margin-bottom: 20px;">
-      <div style="flex: 1; text-align: center; background-color: #8c5a4f; color: white; padding: 10px 0; border-radius: 16px; font-weight: bold; font-size: 14px;">
+      <button type="button" id="apb-tab-breakup-{{ uid }}" class="apb-tab apb-tab-active" style="flex: 1; text-align: center; background-color: #8c5a4f; color: white; padding: 10px 0; border-radius: 16px; font-weight: bold; font-size: 14px; border: none; cursor: pointer;">
         Price Breakup
-      </div>
-      <div style="flex: 1; text-align: center; color: #888; padding: 10px 0; font-weight: 500; font-size: 14px;">
+      </button>
+      <button type="button" id="apb-tab-comparison-{{ uid }}" class="apb-tab" style="flex: 1; text-align: center; background: none; color: #888; padding: 10px 0; font-weight: 500; font-size: 14px; border: none; cursor: pointer;">
         Price Comparison
+      </button>
+    </div>
+
+    <div id="apb-panel-breakup-{{ uid }}" class="apb-panel">
+      <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+        <div>{{ breakdown.settings.karat }} Gold ({{ breakdown.settings.goldWeight }}g @ ₹{{ breakdown.settings.goldRate }}/g)</div>
+        <div style="font-weight: 600;">₹{{ breakdown.goldValue }}</div>
       </div>
-    </div>
 
-    <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
-      <div>{{ breakdown.settings.karat }} Gold ({{ breakdown.settings.goldWeight }}g @ ₹{{ breakdown.settings.goldRate }}/g)</div>
-      <div style="font-weight: 600;">₹{{ breakdown.goldValue }}</div>
-    </div>
-
-    {% if breakdown.parsedDiamonds %}
-      <div style="margin-bottom: 15px; font-size: 14px; color: #444;">
-        <div style="display: flex; justify-content: space-between;">
-          <div>Diamond Total</div>
+      {% if breakdown.parsedDiamonds %}
+        <div style="margin-bottom: 15px; font-size: 14px; color: #444;">
+          <div style="display: flex; justify-content: space-between;">
+            <div>Diamond Total</div>
+            <div style="font-weight: 600;">₹{{ breakdown.diamondPrice }}</div>
+          </div>
+          <div style="padding-left: 10px; margin-top: 5px; font-size: 12px; color: #666; border-left: 2px solid #eaeaea;">
+            {% for diamond in breakdown.parsedDiamonds %}
+              <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
+                <span>{{ diamond.quantity }}x {{ diamond.shape }} ({{ diamond.carat }}ct)</span>
+                <span>₹{{ diamond.price }}</span>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      {% else %}
+        <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+          <div>Diamond (Base Price)</div>
           <div style="font-weight: 600;">₹{{ breakdown.diamondPrice }}</div>
         </div>
-        <div style="padding-left: 10px; margin-top: 5px; font-size: 12px; color: #666; border-left: 2px solid #eaeaea;">
-          {% for diamond in breakdown.parsedDiamonds %}
-            <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-              <span>{{ diamond.quantity }}x {{ diamond.shape }} ({{ diamond.carat }}ct)</span>
-              <span>₹{{ diamond.price }}</span>
-            </div>
-          {% endfor %}
+      {% endif %}
+
+      <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+        <div>Making Charges</div>
+        <div style="font-weight: 600;">₹{{ breakdown.makingCharges }}</div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 14px; color: #444;">
+        <div>GST ({{ breakdown.settings.gstPercentage }}%)</div>
+        <div style="font-weight: 600;">₹{{ breakdown.gst }}</div>
+      </div>
+
+      <div style="border-top: 1px solid #eaeaea; padding-top: 15px; display: flex; justify-content: space-between; font-size: 16px; color: #000;">
+        <div style="font-weight: bold;">Total</div>
+        <div style="font-weight: bold;">₹{{ breakdown.finalPrice }}</div>
+      </div>
+    </div>
+
+    <div id="apb-panel-comparison-{{ uid }}" class="apb-panel" style="display: none;">
+      <div style="font-size: 12px; color: #888; margin-bottom: 15px;">
+        Gold is priced at the live market rate - no markup there. The savings below are on making charges and diamond price only.
+      </div>
+
+      <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+        <div>{{ breakdown.settings.karat }} Gold</div>
+        <div style="text-align: right;">
+          <div style="font-weight: 600;">₹{{ breakdown.goldValue }}</div>
+          <div style="font-size: 11px; color: #888;">Market rate, no markup</div>
         </div>
       </div>
-    {% else %}
+
       <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
-        <div>Diamond (Base Price)</div>
-        <div style="font-weight: 600;">₹{{ breakdown.diamondPrice }}</div>
+        <div>Making Charges</div>
+        <div style="text-align: right;">
+          {% if breakdown.makingChargesCompareAt %}
+            <div>
+              <span style="text-decoration: line-through; color: #999; font-size: 12px;">₹{{ breakdown.makingChargesCompareAt }}</span>
+              <span style="font-weight: 600;"> ₹{{ breakdown.makingCharges }}</span>
+            </div>
+            <div style="font-size: 11px; color: #2e7d32;">You save ₹{{ breakdown.makingChargesSavings }}</div>
+          {% else %}
+            <div style="font-weight: 600;">₹{{ breakdown.makingCharges }}</div>
+          {% endif %}
+        </div>
       </div>
-    {% endif %}
 
-    <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
-      <div>Making Charges</div>
-      <div style="font-weight: 600;">₹{{ breakdown.makingCharges }}</div>
-    </div>
+      <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+        <div>Diamond Price</div>
+        <div style="text-align: right;">
+          {% if breakdown.diamondPriceCompareAt %}
+            <div>
+              <span style="text-decoration: line-through; color: #999; font-size: 12px;">₹{{ breakdown.diamondPriceCompareAt }}</span>
+              <span style="font-weight: 600;"> ₹{{ breakdown.diamondPrice }}</span>
+            </div>
+            <div style="font-size: 11px; color: #2e7d32;">You save ₹{{ breakdown.diamondSavings }}</div>
+          {% else %}
+            <div style="font-weight: 600;">₹{{ breakdown.diamondPrice }}</div>
+          {% endif %}
+        </div>
+      </div>
 
-    <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 14px; color: #444;">
-      <div>GST ({{ breakdown.settings.gstPercentage }}%)</div>
-      <div style="font-weight: 600;">₹{{ breakdown.gst }}</div>
-    </div>
-
-    <div style="border-top: 1px solid #eaeaea; padding-top: 15px; display: flex; justify-content: space-between; font-size: 16px; color: #000;">
-      <div style="font-weight: bold;">Total</div>
-      <div style="font-weight: bold;">₹{{ breakdown.finalPrice }}</div>
+      <div style="border-top: 1px solid #eaeaea; padding-top: 15px; display: flex; justify-content: space-between; font-size: 16px; color: #000;">
+        <div style="font-weight: bold;">Total</div>
+        <div style="text-align: right;">
+          {% if breakdown.compareAtPrice %}
+            <div>
+              <span style="text-decoration: line-through; color: #999; font-size: 13px;">₹{{ breakdown.compareAtPrice }}</span>
+              <span style="font-weight: bold;"> ₹{{ breakdown.finalPrice }}</span>
+            </div>
+          {% else %}
+            <div style="font-weight: bold;">₹{{ breakdown.finalPrice }}</div>
+          {% endif %}
+        </div>
+      </div>
     </div>
 
   </div>
 
   <script>
-    // Listen for variant changes on the product page and refresh the page or update DOM
-    // For simplicity, a hard refresh when variant ID changes in URL is a common fallback
-    // Modern themes fire 'variant:changed' events, but they differ by theme.
-    document.addEventListener("change", function(event) {
-      if (event.target.name === "id") {
-        setTimeout(() => location.reload(), 300); // Reload to fetch new metafields for the selected variant
+    (function() {
+      var uid = {{ uid | json }};
+      var tabBreakup = document.getElementById('apb-tab-breakup-' + uid);
+      var tabComparison = document.getElementById('apb-tab-comparison-' + uid);
+      var panelBreakup = document.getElementById('apb-panel-breakup-' + uid);
+      var panelComparison = document.getElementById('apb-panel-comparison-' + uid);
+
+      function activate(tab, panel, otherTab, otherPanel) {
+        tab.style.backgroundColor = '#8c5a4f';
+        tab.style.color = 'white';
+        otherTab.style.backgroundColor = 'transparent';
+        otherTab.style.color = '#888';
+        panel.style.display = 'block';
+        otherPanel.style.display = 'none';
       }
-    });
+
+      if (tabBreakup && tabComparison) {
+        tabBreakup.addEventListener('click', function() {
+          activate(tabBreakup, panelBreakup, tabComparison, panelComparison);
+        });
+        tabComparison.addEventListener('click', function() {
+          activate(tabComparison, panelComparison, tabBreakup, panelBreakup);
+        });
+      }
+
+      // Listen for variant changes on the product page and refresh the page or update DOM
+      // For simplicity, a hard refresh when variant ID changes in URL is a common fallback
+      // Modern themes fire 'variant:changed' events, but they differ by theme.
+      document.addEventListener("change", function(event) {
+        if (event.target.name === "id") {
+          setTimeout(function() { location.reload(); }, 300); // Reload to fetch new metafields for the selected variant
+        }
+      });
+    })();
   </script>
 {% endif %}
 

@@ -186,7 +186,7 @@ export default function InfoPage() {
                   <List.Item><strong>Final Live Price</strong> = Subtotal + GST Tax (e.g. 3%)</List.Item>
                 </List>
                 <Text as="p">
-                  <em>Note: The "Compare at Price" is automatically set 25% higher than the Final Live Price to show an attractive discount on your storefront.</em>
+                  <em>Note: Gold value tracks the live market rate 1:1 - it is never marked up. The "Compare at Price" instead comes from marking up only the Making Charges and Diamond Price portions (25% by default, configurable on the Pricing Rules page), so the storefront can show a genuine "you save on making charges / diamond" comparison rather than an inflated discount on the metal itself.</em>
                 </Text>
               </BlockStack>
             </Card>
