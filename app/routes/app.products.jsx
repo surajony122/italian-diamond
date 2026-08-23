@@ -16,15 +16,14 @@ import {
   Filters,
   SkeletonPage,
   SkeletonBodyText,
-  SkeletonDisplayText,
-  Divider,
   Icon,
   Modal,
   Box,
   DropZone,
   ProgressBar,
+  Tooltip,
 } from "@shopify/polaris";
-import { ChevronDownIcon, ChevronUpIcon, ExportIcon, ImportIcon } from '@shopify/polaris-icons';
+import { ChevronDownIcon, ChevronUpIcon, ExportIcon, ImportIcon, InfoIcon } from '@shopify/polaris-icons';
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { calculateFinalPrice, parseDiamondText } from "../services/pricing";
@@ -341,6 +340,22 @@ export const action = async ({ request }) => {
 
   return new Response(JSON.stringify({ error: "Invalid intent" }), { status: 400 });
 };
+
+const thStyle = { padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381' };
+
+// Column header with a small info icon + tooltip explaining what it means - several of
+// these columns (Diamond Base, Original Backup, Live Final Price) aren't self-explanatory
+// on first use.
+function HeaderWithTooltip({ label, help }) {
+  return (
+    <InlineStack gap="100" blockAlign="center" wrap={false}>
+      <span>{label}</span>
+      <Tooltip content={help}>
+        <Icon source={InfoIcon} tone="subdued" />
+      </Tooltip>
+    </InlineStack>
+  );
+}
 
 export default function Products() {
   const { products, q, status } = useLoaderData();
@@ -724,9 +739,9 @@ export default function Products() {
 
             {selectedVariants.length > 0 && (
               <div style={{padding: '16px', backgroundColor: '#f4f6f8', borderTop: '1px solid #dfe3e8', borderBottom: '1px solid #dfe3e8'}}>
-                <InlineStack gap="400" align="start" blockAlign="center">
+                <InlineStack gap="400" align="start" blockAlign="center" wrap>
                   <Text variant="bodyMd" fontWeight="bold">{selectedVariants.length} variants selected</Text>
-                  <div style={{width: '200px'}}>
+                  <div style={{width: '200px', minWidth: '160px'}}>
                     <TextField
                       type="number"
                       placeholder="Bulk set Gold Weight"
@@ -742,14 +757,16 @@ export default function Products() {
               </div>
             )}
 
-        {/* Grouped Table (Kept Custom for Nested Variants UI) */}
-        <div style={{ overflow: 'hidden', backgroundColor: 'white' }}>
-          <table style={{width: '100%', borderCollapse: 'collapse', textAlign: 'left'}}>
+        {/* Grouped Table (Kept Custom for Nested Variants UI). overflowX: auto instead of
+            hidden - on narrow/embedded viewports this scrolls the table horizontally
+            instead of silently clipping columns off the right edge. */}
+        <div style={{ overflowX: 'auto', backgroundColor: 'white' }}>
+          <table style={{width: '100%', minWidth: '900px', borderCollapse: 'collapse', textAlign: 'left'}}>
             <thead>
               <tr style={{borderBottom: '1px solid #e1e3e5', backgroundColor: '#f9fafb'}}>
                 <th style={{padding: '16px', width: '40px'}}>
-                  <input 
-                    type="checkbox" 
+                  <input
+                    type="checkbox"
                     onChange={(e) => {
                       if (e.target.checked) setSelectedVariants(allVariantIds);
                       else setSelectedVariants([]);
@@ -758,29 +775,61 @@ export default function Products() {
                     style={{width: '16px', height: '16px', cursor: 'pointer'}}
                   />
                 </th>
-                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Product / Variant</th>
-                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Diamond Base (₹)</th>
-                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Gold Weight (g)</th>
-                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Original Backup</th>
-                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Live Final Price</th>
-                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Action</th>
+                <th style={thStyle}>Product / Variant</th>
+                <th style={thStyle}>
+                  <HeaderWithTooltip
+                    label="Diamond Base (₹)"
+                    help="The diamond cost used in pricing. Auto-filled from the product description when it can be parsed; otherwise enter it manually per variant."
+                  />
+                </th>
+                <th style={thStyle}>Gold Weight (g)</th>
+                <th style={thStyle}>
+                  <HeaderWithTooltip
+                    label="Original Backup"
+                    help="The variant's price before dynamic pricing first touched it. Saved automatically on first sync so you can always restore to it from the Dashboard."
+                  />
+                </th>
+                <th style={thStyle}>
+                  <HeaderWithTooltip
+                    label="Live Final Price"
+                    help="The current storefront price, plus a breakdown of gold, making charge, diamond, and GST that produced it."
+                  />
+                </th>
+                <th style={thStyle}>Action</th>
               </tr>
             </thead>
             <tbody>
               {products.length === 0 && (
                 <tr>
-                  <td colSpan="6" style={{padding: '32px', textAlign: 'center', color: '#637381'}}>
-                    No products found matching your filters.
+                  <td colSpan="7" style={{padding: '32px', textAlign: 'center'}}>
+                    <BlockStack gap="200" inlineAlign="center">
+                      <Text as="p" tone="subdued">
+                        {q || status !== "ALL"
+                          ? "No products match your search/filter."
+                          : "No products found."}
+                      </Text>
+                      {(q || status !== "ALL") && (
+                        <Button
+                          onClick={() => {
+                            setQueryValue("");
+                            setStatusValue("ALL");
+                            submit({ q: "", status: "ALL" });
+                          }}
+                        >
+                          Clear filters
+                        </Button>
+                      )}
+                    </BlockStack>
                   </td>
                 </tr>
               )}
               {products.map(product => (
-                <ProductGroup 
-                  key={product.id} 
-                  product={product} 
-                  fetcher={fetcher} 
-                  selectedVariants={selectedVariants} 
-                  onToggleSelect={toggleSelect} 
+                <ProductGroup
+                  key={product.id}
+                  product={product}
+                  fetcher={fetcher}
+                  selectedVariants={selectedVariants}
+                  onToggleSelect={toggleSelect}
                   onToggleProductSelect={toggleProductSelect}
                 />
               ))}
