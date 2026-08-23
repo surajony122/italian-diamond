@@ -21,10 +21,10 @@ export default function App() {
     <PolarisAppProvider i18n={{}}>
       <AppProvider embedded apiKey={apiKey}>
         <ui-nav-menu>
-          <Link to="/app" rel="home">Home</Link>
+          <Link to="/app" rel="home">Dashboard</Link>
           <Link to="/app/products">Products</Link>
           <Link to="/app/history">Audit History</Link>
-          <Link to="/app/info">How it Works</Link>
+          <Link to="/app/info">Diagnostics & Help</Link>
         </ui-nav-menu>
         <Outlet />
       </AppProvider>

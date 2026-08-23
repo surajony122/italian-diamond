@@ -876,16 +876,20 @@ function VariantRow({ variant, fetcher, isSelected, onToggle, isLast }) {
         <Text variant="bodyMd" color="subdued">{variant.variantTitle !== 'Default Title' ? variant.variantTitle : 'Default Variant'}</Text>
       </td>
       <td style={{padding: '16px'}}>
-        <TextField
-          type="number"
-          step="0.01"
-          value={diamondPrice}
-          onChange={setDiamondPrice}
-          prefix="₹"
-          autoComplete="off"
-          disabled={isSmartParsed}
-          helpText={isSmartParsed ? "Auto-calculated" : ""}
-        />
+        <BlockStack gap="100">
+          <TextField
+            type="number"
+            step="0.01"
+            value={diamondPrice}
+            onChange={setDiamondPrice}
+            prefix="₹"
+            autoComplete="off"
+            disabled={isSmartParsed}
+          />
+          {isSmartParsed && (
+            <Badge tone="info" size="small">Auto-calculated from description</Badge>
+          )}
+        </BlockStack>
       </td>
       <td style={{padding: '16px'}}>
         <TextField
@@ -904,19 +908,28 @@ function VariantRow({ variant, fetcher, isSelected, onToggle, isLast }) {
       <td style={{padding: '16px'}}>
         <Text variant="bodyMd" fontWeight="bold">₹{parseFloat(variant.price).toFixed(2)}</Text>
         {breakdown && breakdown.settings && (
-          <div style={{fontSize: '11px', color: '#637381', marginTop: '4px', lineHeight: '1.4'}}>
-            {breakdown.settings.karat || "24K"} Gold ({breakdown.settings.goldWeight}g x ₹{breakdown.settings.goldRate}): ₹{breakdown.goldValue}<br/>
-            Making ({breakdown.settings.goldWeight}g x ₹{breakdown.settings.makingChargePerGram}): ₹{breakdown.makingCharges}<br/>
-            Diamond: ₹{breakdown.diamondPrice}
+          <BlockStack gap="025">
+            <Text as="p" variant="bodySm" tone="subdued">
+              {breakdown.settings.karat || "24K"} gold ({breakdown.settings.goldWeight}g × ₹{breakdown.settings.goldRate}) — ₹{breakdown.goldValue}
+            </Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              Making charge ({breakdown.settings.goldWeight}g × ₹{breakdown.settings.makingChargePerGram}) — ₹{breakdown.makingCharges}
+            </Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              Diamond — ₹{breakdown.diamondPrice}
+            </Text>
             {breakdown.parsedDiamonds && breakdown.parsedDiamonds.map((d, i) => (
-              <span key={i}><br/>&nbsp;&nbsp;↳ {d.quantity}x {d.shape} ({d.carat}ct x ₹{d.rate}): ₹{d.price}</span>
+              <Text as="p" variant="bodySm" tone="subdued" key={i}>
+                &nbsp;&nbsp;↳ {d.quantity}× {d.shape} ({d.carat}ct × ₹{d.rate}) — ₹{d.price}
+              </Text>
             ))}
+            <Text as="p" variant="bodySm" tone="subdued">
+              GST ({breakdown.settings.gstPercentage}%) — ₹{breakdown.gst}
+            </Text>
             {breakdown.diamondParsingError && (
-              <><br/><Badge tone="critical">Text Parse Error!</Badge></>
+              <Badge tone="critical">Diamond text couldn't be parsed - check description</Badge>
             )}
-            <br/>
-            GST ({breakdown.settings.gstPercentage}%): ₹{breakdown.gst}
-          </div>
+          </BlockStack>
         )}
       </td>
       <td style={{padding: '16px'}}>

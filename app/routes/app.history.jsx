@@ -21,6 +21,20 @@ export const loader = async ({ request }) => {
   return { logs };
 };
 
+// Maps each audit log reason to a distinct badge tone so the history reads at a
+// glance instead of lumping everything that isn't "Bulk Sync" into "success" -
+// a restore/revert is not the same kind of event as a routine price increase.
+const REASON_TONE = {
+  "Bulk Sync": "info",
+  "Bulk API Chunk": "info",
+  "Manual Save": "success",
+  "Restore Original Price": "attention",
+};
+
+function reasonTone(reason) {
+  return REASON_TONE[reason] || "new";
+}
+
 export default function HistoryPage() {
   const { logs } = useLoaderData();
 
@@ -29,7 +43,7 @@ export default function HistoryPage() {
     <Text variant="bodyMd" fontWeight="bold">{log.title}</Text>,
     log.oldPrice ? `₹${log.oldPrice.toFixed(2)}` : "-",
     `₹${log.newPrice.toFixed(2)}`,
-    <Badge tone={log.reason === "Bulk Sync" ? "info" : "success"}>{log.reason}</Badge>
+    <Badge tone={reasonTone(log.reason)}>{log.reason}</Badge>
   ]);
 
   return (
