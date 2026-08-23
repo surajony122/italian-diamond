@@ -2,18 +2,24 @@ services:
   - type: web
     name: gold-price
     runtime: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
     autoDeployTrigger: commit
     healthCheckPath: /
-    disk:
-      name: gold-price-data
-      # Prisma's schema.prisma points at datasource url "file:dev.sqlite", which resolves
-      # relative to /app/prisma at runtime — mount the persistent disk there so the SQLite
-      # DB (sessions, AppSettings, AuditLog) survives restarts/redeploys instead of being
-      # wiped every time (Render's default web service disk is ephemeral).
-      mountPath: /app/prisma
-      sizeGB: 1
+    # NOTE: Render's Free plan does not support persistent Disks (that needs Starter or
+    # above), so there is no `disk:` block here. Prisma's SQLite file (sessions,
+    # AppSettings, AuditLog) lives on the container's ephemeral filesystem and WILL be
+    # wiped on every deploy, and likely on every cold start after the free instance spins
+    # down from inactivity. In practice that means merchants may need to reinstall/re-auth
+    # periodically and your gold rate/making charge settings can reset to defaults.
+    # Fine to start on Free for a quick check; when you're ready for real merchants, either
+    # upgrade this service to a paid plan and add:
+    #   disk:
+    #     name: gold-price-data
+    #     mountPath: /app/prisma
+    #     sizeGB: 1
+    # or switch the datasource to an external database (e.g. a free-tier hosted Postgres)
+    # so data survives regardless of plan/disk.
     envVars:
       - key: NODE_ENV
         value: production
