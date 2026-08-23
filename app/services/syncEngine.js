@@ -1,5 +1,44 @@
 import { calculateFinalPrice, parseDiamondText } from "./pricing";
 import prisma from "../db.server";
+
+const BULK_UPDATE_MUTATION = `
+  mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+    productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+      userErrors { field message }
+    }
+  }
+`;
+
+/**
+ * Runs productVariantsBulkUpdate for one product, with a short retry-with-backoff on
+ * Shopify's rate-limit ("THROTTLED") response. Previously there was no handling for
+ * this at all - a throttled response has `data: null`, so reading
+ * `mutData.data.productVariantsBulkUpdate.userErrors` would throw a confusing
+ * "Cannot read properties of null" instead of a clear, retryable error.
+ */
+async function bulkUpdateProductVariants(admin, productId, variantsChunk, errorPrefix, { maxAttempts = 3 } = {}) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const mutRes = await admin.graphql(BULK_UPDATE_MUTATION, { variables: { productId, variants: variantsChunk } });
+    const mutData = await mutRes.json();
+
+    const isThrottled = mutData.errors?.some(e => e.extensions?.code === "THROTTLED");
+    if (isThrottled && attempt < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+      continue;
+    }
+
+    const result = mutData.data?.productVariantsBulkUpdate;
+    if (!result) {
+      throw new Error(`${errorPrefix}: no data returned for product ${productId} (${JSON.stringify(mutData.errors || mutData)})`);
+    }
+    if (result.userErrors.length > 0) {
+      console.error(`${errorPrefix.toUpperCase()} ERRORS:`, JSON.stringify(result.userErrors, null, 2));
+      throw new Error(`${errorPrefix}: ` + result.userErrors[0].message);
+    }
+    return;
+  }
+}
+
 const GET_VARIANTS_FOR_SYNC_QUERY = `
   query GetVariants($cursor: String, $pageSize: Int!) {
     productVariants(first: $pageSize, after: $cursor) {
@@ -208,21 +247,16 @@ export async function syncVariantPage(admin, appSettings, { cursor = null, pageS
       });
     }
 
-    for (const [productId, variantsChunk] of Object.entries(grouped)) {
-      const mutRes = await admin.graphql(`
-        mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-            userErrors { field message }
-          }
-        }
-      `, { variables: { productId, variants: variantsChunk } });
-
-      const mutData = await mutRes.json();
-      if (mutData.data.productVariantsBulkUpdate.userErrors.length > 0) {
-        console.error("BULK UPDATE ERRORS:", JSON.stringify(mutData.data.productVariantsBulkUpdate.userErrors, null, 2));
-        throw new Error("Failed to sync variants: " + mutData.data.productVariantsBulkUpdate.userErrors[0].message);
-      }
-    }
+    // Run the per-product mutations concurrently instead of one-at-a-time - a single
+    // 25-variant page can span many distinct products, and awaiting each mutation
+    // sequentially was the dominant cost of a sync (N network round-trips per page
+    // instead of ~1). bulkUpdateProductVariants has its own retry-on-throttle, so
+    // this doesn't just trade speed for reliability.
+    await Promise.all(
+      Object.entries(grouped).map(([productId, variantsChunk]) =>
+        bulkUpdateProductVariants(admin, productId, variantsChunk, "Failed to sync variants")
+      )
+    );
   }
 
   if (auditLogs.length > 0) {
@@ -340,22 +374,12 @@ export async function restoreOriginalPrices(admin, shop) {
         grouped[update.productId].push({ id: update.id, price: update.price, compareAtPrice: null });
       }
 
-      for (const [productId, variantsChunk] of Object.entries(grouped)) {
-        const mutRes = await admin.graphql(`
-          mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-              userErrors { field message }
-            }
-          }
-        `, { variables: { productId, variants: variantsChunk } });
-
-        const mutData = await mutRes.json();
-        if (mutData.data.productVariantsBulkUpdate.userErrors.length > 0) {
-          console.error("RESTORE ERRORS:", JSON.stringify(mutData.data.productVariantsBulkUpdate.userErrors, null, 2));
-          throw new Error("Failed to restore variants: " + mutData.data.productVariantsBulkUpdate.userErrors[0].message);
-        }
-        restoredCount += variantsChunk.length;
-      }
+      await Promise.all(
+        Object.entries(grouped).map(([productId, variantsChunk]) =>
+          bulkUpdateProductVariants(admin, productId, variantsChunk, "Failed to restore variants")
+        )
+      );
+      restoredCount += variantsToUpdate.length;
     }
 
     if (auditLogs.length > 0) {
