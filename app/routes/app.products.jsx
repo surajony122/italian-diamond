@@ -268,75 +268,11 @@ export const action = async ({ request }) => {
     });
   }
 
-  if (intent === "backup_prices") {
-    let hasNextPage = true;
-    let cursor = null;
-    let successCount = 0;
-    
-    try {
-      while (hasNextPage) {
-        const query = `
-          query getProducts($cursor: String) {
-            products(first: 50, after: $cursor) {
-              pageInfo { hasNextPage endCursor }
-              edges {
-                node {
-                  variants(first: 100) {
-                    edges {
-                      node {
-                        id
-                        price
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        `;
-        const response = await admin.graphql(query, { variables: { cursor } });
-        const { data } = await response.json();
-        
-        let metafieldsToSet = [];
-        for (const pEdge of data.products.edges) {
-          for (const vEdge of pEdge.node.variants.edges) {
-            const variant = vEdge.node;
-            metafieldsToSet.push({
-              ownerId: variant.id,
-              namespace: "custom",
-              key: "original_price",
-              type: "number_decimal",
-              value: variant.price
-            });
-          }
-        }
-        
-        const MUTATION = `
-          mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-            metafieldsSet(metafields: $metafields) {
-              userErrors { field message }
-            }
-          }
-        `;
-        for (let i = 0; i < metafieldsToSet.length; i += 25) {
-          const chunk = metafieldsToSet.slice(i, i + 25);
-          await admin.graphql(MUTATION, { variables: { metafields: chunk } });
-          successCount += chunk.length;
-        }
-        
-        hasNextPage = data.products.pageInfo.hasNextPage;
-        cursor = data.products.pageInfo.endCursor;
-      }
-      
-      return new Response(JSON.stringify({ message: `Successfully backed up original prices for ${successCount} variants!` }), {
-        headers: { "Content-Type": "application/json" }
-      });
-    } catch (e) {
-      return new Response(JSON.stringify({ message: "Failed to backup prices: " + e.message }), {
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-  }
+  // Note: "Backup Original Prices" in the UI hits the chunked /api/backup-chunk route
+  // (see startProgressTask below), not an intent here. An earlier, unchunked duplicate
+  // of that same logic used to live in this action (same page-in-one-request pattern
+  // that caused the Render startup timeout - see the Dockerfile fix) and was dead code
+  // since nothing ever submitted intent="backup_prices"; removed rather than left to rot.
 
   return new Response(JSON.stringify({ error: "Invalid intent" }), { status: 400 });
 };
