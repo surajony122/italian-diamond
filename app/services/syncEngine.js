@@ -368,3 +368,75 @@ export async function restoreOriginalPrices(admin, shop) {
 
   return restoredCount;
 }
+
+const GET_VARIANTS_FOR_HEALTH_QUERY = `
+  query GetVariantsForHealth($cursor: String) {
+    productVariants(first: 250, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          product { status }
+          priceBreakdown: metafield(namespace: "custom", key: "price_breakdown") { value }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * Scans the whole ACTIVE catalog (cheap - one metafield per variant, not the full sync
+ * query) to answer "where does my catalog actually stand right now":
+ *  - pricedOk: has a price_breakdown and no diamond-parsing error
+ *  - hasComparison: has a price_breakdown with compareAtPrice (i.e. synced under the
+ *    current pricing logic, not a stale pre-compareAtPrice sync)
+ *  - failed: has a price_breakdown but diamondParsingError is true - it WAS priced (and
+ *    the live price WAS updated), just with the diamond cost likely wrong because the
+ *    shape/carat/quantity lines in the description didn't line up
+ *  - notYetPriced: no price_breakdown at all - never been through a sync
+ */
+export async function getCatalogHealthStats(admin) {
+  let hasNextPage = true;
+  let cursor = null;
+
+  let totalActiveVariants = 0;
+  let pricedOk = 0;
+  let hasComparison = 0;
+  let failed = 0;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(GET_VARIANTS_FOR_HEALTH_QUERY, { variables: { cursor } });
+    const data = await response.json();
+    const variants = data.data.productVariants.edges;
+
+    for (const edge of variants) {
+      const variant = edge.node;
+      if (variant.product.status !== "ACTIVE") continue;
+      totalActiveVariants++;
+
+      const raw = variant.priceBreakdown?.value;
+      if (!raw) continue; // not yet priced
+
+      let breakdown = null;
+      try {
+        breakdown = JSON.parse(raw);
+      } catch (e) {
+        continue; // corrupt/unexpected value - treat like not-yet-priced rather than guess
+      }
+
+      if (breakdown.diamondParsingError) {
+        failed++;
+        continue;
+      }
+
+      pricedOk++;
+      if (breakdown.compareAtPrice != null) hasComparison++;
+    }
+
+    hasNextPage = data.data.productVariants.pageInfo.hasNextPage;
+    cursor = data.data.productVariants.pageInfo.endCursor;
+  }
+
+  const notYetPriced = totalActiveVariants - pricedOk - failed;
+
+  return { totalActiveVariants, pricedOk, hasComparison, failed, notYetPriced };
+}

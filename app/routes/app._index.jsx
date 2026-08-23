@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useNavigation } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { Page, Layout, Card, BlockStack, InlineStack, Text, Button, Select, TextField, Banner, Badge, ProgressBar, DataTable, Link, Box, Icon } from "@shopify/polaris";
-import { RefreshIcon, CashDollarIcon, SaveIcon, ShieldCheckMarkIcon, ClockIcon, ChartVerticalIcon } from "@shopify/polaris-icons";
+import { Page, Layout, Card, BlockStack, InlineStack, Text, Button, Select, TextField, Banner, Badge, ProgressBar, DataTable, Link, Box, Icon, SkeletonPage, SkeletonBodyText } from "@shopify/polaris";
+import { RefreshIcon, CashDollarIcon, SaveIcon, ShieldCheckMarkIcon, ClockIcon, ChartVerticalIcon, CheckCircleIcon, AlertTriangleIcon, AlertDiamondIcon, PageClockIcon } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { fetchLiveGoldRate } from "../services/goldApi";
-import { runBulkSync, restoreOriginalPrices } from "../services/syncEngine";
+import { runBulkSync, restoreOriginalPrices, getCatalogHealthStats } from "../services/syncEngine";
 
 export const loader = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
 
   let settings = await prisma.appSettings.findUnique({
     where: { shop: session.shop },
@@ -23,7 +23,7 @@ export const loader = async ({ request }) => {
   }
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const [totalSyncs, syncsLast7Days, dailyRows] = await Promise.all([
+  const [totalSyncs, syncsLast7Days, dailyRows, catalogHealth] = await Promise.all([
     prisma.auditLog.count({ where: { shop: session.shop } }),
     prisma.auditLog.count({ where: { shop: session.shop, createdAt: { gt: sevenDaysAgo } } }),
     prisma.$queryRaw`
@@ -32,6 +32,7 @@ export const loader = async ({ request }) => {
       WHERE shop = ${session.shop} AND "createdAt" > now() - interval '14 days'
       GROUP BY day ORDER BY day
     `,
+    getCatalogHealthStats(admin),
   ]);
 
   // Zero-fill the last 14 days so the chart always has a full, evenly-spaced axis
@@ -50,7 +51,7 @@ export const loader = async ({ request }) => {
     });
   }
 
-  return { settings, totalSyncs, syncsLast7Days, dailyActivity };
+  return { settings, totalSyncs, syncsLast7Days, dailyActivity, catalogHealth };
 };
 
 export const action = async ({ request }) => {
@@ -203,9 +204,10 @@ function StatTile({ icon, label, value, tone = "info" }) {
 }
 
 export default function Index() {
-  const { settings: initialSettings, totalSyncs, syncsLast7Days, dailyActivity } = useLoaderData();
+  const { settings: initialSettings, totalSyncs, syncsLast7Days, dailyActivity, catalogHealth } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
+  const navigation = useNavigation();
 
   const settings = fetcher.data?.settings || initialSettings;
   const isLoading = fetcher.state !== "idle";
@@ -226,6 +228,33 @@ export default function Index() {
     setGoldApiMode(settings.goldApiMode || "manual");
   }, [settings.goldApiKey, settings.goldRate, settings.goldApiMode]);
 
+  // Loading this page runs a full catalog scan (getCatalogHealthStats), which takes a
+  // few seconds on a large store - show a skeleton while navigating here instead of a
+  // blank/frozen screen.
+  if (navigation.state === "loading" && navigation.location.pathname === "/app") {
+    return (
+      <SkeletonPage fullWidth>
+        <Layout>
+          <Layout.Section>
+            <InlineStack gap="300" wrap>
+              {[1, 2, 3].map(i => (
+                <Box key={i} background="bg-surface-secondary" padding="300" borderRadius="200" minWidth="160px">
+                  <SkeletonBodyText lines={2} />
+                </Box>
+              ))}
+            </InlineStack>
+          </Layout.Section>
+          <Layout.Section>
+            <Card><SkeletonBodyText lines={4} /></Card>
+          </Layout.Section>
+          <Layout.Section>
+            <Card><SkeletonBodyText lines={6} /></Card>
+          </Layout.Section>
+        </Layout>
+      </SkeletonPage>
+    );
+  }
+
   return (
     <Page title="Gold Price Sync Dashboard" fullWidth>
       {isLoading && <div style={{marginBottom: '16px'}}><ProgressBar progress={100} size="small" tone="primary" /></div>}
@@ -243,6 +272,54 @@ export default function Index() {
               tone={settings.lastSyncTime ? "success" : "warning"}
             />
           </InlineStack>
+        </Layout.Section>
+
+        {/* Catalog health - real counts across the whole ACTIVE catalog, not just
+            whatever's loaded on the Products page */}
+        <Layout.Section>
+          <Card padding="400">
+            <BlockStack gap="300">
+              <InlineStack align="space-between">
+                <Text variant="headingMd" as="h2">Catalog Health</Text>
+                <Text as="span" variant="bodySm" tone="subdued">
+                  {catalogHealth.totalActiveVariants.toLocaleString()} active variants scanned
+                </Text>
+              </InlineStack>
+              <InlineStack gap="300" wrap>
+                <StatTile
+                  icon={CheckCircleIcon}
+                  label="Priced Correctly"
+                  value={catalogHealth.pricedOk.toLocaleString()}
+                  tone="success"
+                />
+                <StatTile
+                  icon={AlertDiamondIcon}
+                  label="Has Price Comparison"
+                  value={catalogHealth.hasComparison.toLocaleString()}
+                  tone="info"
+                />
+                <StatTile
+                  icon={AlertTriangleIcon}
+                  label="Calculation Failures"
+                  value={catalogHealth.failed.toLocaleString()}
+                  tone={catalogHealth.failed > 0 ? "critical" : "success"}
+                />
+                <StatTile
+                  icon={PageClockIcon}
+                  label="Not Yet Priced"
+                  value={catalogHealth.notYetPriced.toLocaleString()}
+                  tone={catalogHealth.notYetPriced > 0 ? "warning" : "success"}
+                />
+              </InlineStack>
+              {catalogHealth.failed > 0 && (
+                <Text as="p" tone="subdued" variant="bodySm">
+                  "Calculation Failures" means the diamond description's Shape/Carat/Quantity lines didn't line
+                  up during parsing - the variant still got priced (diamond cost likely $0), but its description
+                  is worth checking on the Products page.
+                </Text>
+              )}
+            </BlockStack>
+          </Card>
         </Layout.Section>
 
         <Layout.Section>
