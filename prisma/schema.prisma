@@ -53,6 +53,12 @@ model AppSettings {
   // not this database directly.
   showPriceComparison Boolean  @default(true)
   lastSyncTime        DateTime?
+  // Cached result of the full-catalog health scan (getCatalogHealthStats) - this can
+  // take well over a minute on a large catalog (tens of thousands of variants), so it
+  // runs in the background rather than blocking the Dashboard's page load. Null until
+  // the first scan completes.
+  catalogHealthStats      Json?
+  catalogHealthComputedAt DateTime?
 }
 
 model AuditLog {

@@ -10,7 +10,7 @@ import { fetchLiveGoldRate } from "../services/goldApi";
 import { runBulkSync, restoreOriginalPrices, getCatalogHealthStats } from "../services/syncEngine";
 
 export const loader = async ({ request }) => {
-  const { admin, session } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
 
   let settings = await prisma.appSettings.findUnique({
     where: { shop: session.shop },
@@ -23,7 +23,7 @@ export const loader = async ({ request }) => {
   }
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const [totalSyncs, syncsLast7Days, dailyRows, catalogHealth] = await Promise.all([
+  const [totalSyncs, syncsLast7Days, dailyRows] = await Promise.all([
     prisma.auditLog.count({ where: { shop: session.shop } }),
     prisma.auditLog.count({ where: { shop: session.shop, createdAt: { gt: sevenDaysAgo } } }),
     prisma.$queryRaw`
@@ -32,7 +32,6 @@ export const loader = async ({ request }) => {
       WHERE shop = ${session.shop} AND "createdAt" > now() - interval '14 days'
       GROUP BY day ORDER BY day
     `,
-    getCatalogHealthStats(admin),
   ]);
 
   // Zero-fill the last 14 days so the chart always has a full, evenly-spaced axis
@@ -51,7 +50,11 @@ export const loader = async ({ request }) => {
     });
   }
 
-  return { settings, totalSyncs, syncsLast7Days, dailyActivity, catalogHealth };
+  // catalogHealthStats/catalogHealthComputedAt come straight off the settings row
+  // (cached) - NOT recomputed here. A full-catalog scan can take well over a minute
+  // on a large store (confirmed: 87s / 41,906 variants on this exact shop), which
+  // would make every single Dashboard load time out. See "refresh_catalog_health".
+  return { settings, totalSyncs, syncsLast7Days, dailyActivity };
 };
 
 export const action = async ({ request }) => {
@@ -138,6 +141,20 @@ export const action = async ({ request }) => {
     }
   }
 
+  if (intent === "refresh_catalog_health") {
+    // Fire-and-forget, same pattern as sync/restore above - a full-catalog scan can
+    // take well over a minute (confirmed: 87s on this shop's 41,906 variants), so this
+    // must never block the request/response cycle.
+    getCatalogHealthStats(admin)
+      .then((stats) => prisma.appSettings.update({
+        where: { shop: session.shop },
+        data: { catalogHealthStats: stats, catalogHealthComputedAt: new Date() },
+      }))
+      .catch((e) => console.error("Catalog health scan failed:", e));
+
+    return { success: true, message: "Refreshing catalog health in the background - this can take a couple of minutes on a large catalog. Reload this page shortly to see the update." };
+  }
+
   return null;
 };
 
@@ -204,7 +221,7 @@ function StatTile({ icon, label, value, tone = "info" }) {
 }
 
 export default function Index() {
-  const { settings: initialSettings, totalSyncs, syncsLast7Days, dailyActivity, catalogHealth } = useLoaderData();
+  const { settings: initialSettings, totalSyncs, syncsLast7Days, dailyActivity } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
   const navigation = useNavigation();
@@ -228,9 +245,6 @@ export default function Index() {
     setGoldApiMode(settings.goldApiMode || "manual");
   }, [settings.goldApiKey, settings.goldRate, settings.goldApiMode]);
 
-  // Loading this page runs a full catalog scan (getCatalogHealthStats), which takes a
-  // few seconds on a large store - show a skeleton while navigating here instead of a
-  // blank/frozen screen.
   if (navigation.state === "loading" && navigation.location.pathname === "/app") {
     return (
       <SkeletonPage fullWidth>
@@ -275,47 +289,68 @@ export default function Index() {
         </Layout.Section>
 
         {/* Catalog health - real counts across the whole ACTIVE catalog, not just
-            whatever's loaded on the Products page */}
+            whatever's loaded on the Products page. Computed in the background (can take
+            a couple of minutes on a large catalog) and cached - never blocks page load. */}
         <Layout.Section>
           <Card padding="400">
             <BlockStack gap="300">
-              <InlineStack align="space-between">
+              <InlineStack align="space-between" blockAlign="center">
                 <Text variant="headingMd" as="h2">Catalog Health</Text>
-                <Text as="span" variant="bodySm" tone="subdued">
-                  {catalogHealth.totalActiveVariants.toLocaleString()} active variants scanned
-                </Text>
+                <Button
+                  size="micro"
+                  icon={RefreshIcon}
+                  loading={isLoading && fetcher.formData?.get("intent") === "refresh_catalog_health"}
+                  onClick={() => fetcher.submit({ intent: "refresh_catalog_health" }, { method: "POST" })}
+                >
+                  {settings.catalogHealthStats ? "Refresh" : "Scan Catalog Now"}
+                </Button>
               </InlineStack>
-              <InlineStack gap="300" wrap>
-                <StatTile
-                  icon={CheckCircleIcon}
-                  label="Priced Correctly"
-                  value={catalogHealth.pricedOk.toLocaleString()}
-                  tone="success"
-                />
-                <StatTile
-                  icon={AlertDiamondIcon}
-                  label="Has Price Comparison"
-                  value={catalogHealth.hasComparison.toLocaleString()}
-                  tone="info"
-                />
-                <StatTile
-                  icon={AlertTriangleIcon}
-                  label="Calculation Failures"
-                  value={catalogHealth.failed.toLocaleString()}
-                  tone={catalogHealth.failed > 0 ? "critical" : "success"}
-                />
-                <StatTile
-                  icon={PageClockIcon}
-                  label="Not Yet Priced"
-                  value={catalogHealth.notYetPriced.toLocaleString()}
-                  tone={catalogHealth.notYetPriced > 0 ? "warning" : "success"}
-                />
-              </InlineStack>
-              {catalogHealth.failed > 0 && (
-                <Text as="p" tone="subdued" variant="bodySm">
-                  "Calculation Failures" means the diamond description's Shape/Carat/Quantity lines didn't line
-                  up during parsing - the variant still got priced (diamond cost likely $0), but its description
-                  is worth checking on the Products page.
+
+              {settings.catalogHealthStats ? (
+                <>
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    {settings.catalogHealthStats.totalActiveVariants.toLocaleString()} active variants -
+                    last scanned {new Date(settings.catalogHealthComputedAt).toLocaleString()}
+                  </Text>
+                  <InlineStack gap="300" wrap>
+                    <StatTile
+                      icon={CheckCircleIcon}
+                      label="Priced Correctly"
+                      value={settings.catalogHealthStats.pricedOk.toLocaleString()}
+                      tone="success"
+                    />
+                    <StatTile
+                      icon={AlertDiamondIcon}
+                      label="Has Price Comparison"
+                      value={settings.catalogHealthStats.hasComparison.toLocaleString()}
+                      tone="info"
+                    />
+                    <StatTile
+                      icon={AlertTriangleIcon}
+                      label="Calculation Failures"
+                      value={settings.catalogHealthStats.failed.toLocaleString()}
+                      tone={settings.catalogHealthStats.failed > 0 ? "critical" : "success"}
+                    />
+                    <StatTile
+                      icon={PageClockIcon}
+                      label="Not Yet Priced"
+                      value={settings.catalogHealthStats.notYetPriced.toLocaleString()}
+                      tone={settings.catalogHealthStats.notYetPriced > 0 ? "warning" : "success"}
+                    />
+                  </InlineStack>
+                  {settings.catalogHealthStats.failed > 0 && (
+                    <Text as="p" tone="subdued" variant="bodySm">
+                      "Calculation Failures" means the diamond description's Shape/Carat/Quantity lines didn't line
+                      up during parsing - the variant still got priced (diamond cost likely $0), but its description
+                      is worth checking on the Products page.
+                    </Text>
+                  )}
+                </>
+              ) : (
+                <Text as="p" tone="subdued">
+                  Not scanned yet. Click "Scan Catalog Now" to see real counts across your whole catalog - this can
+                  take a couple of minutes on a large store, and runs in the background, so it's safe to navigate
+                  away and check back later.
                 </Text>
               )}
             </BlockStack>
