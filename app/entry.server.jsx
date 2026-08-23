@@ -4,7 +4,12 @@ import { ServerRouter } from "react-router";
 import { createReadableStreamFromReadable } from "@react-router/node";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
-import "./scheduler.server.js";
+// Nightly auto-sync (scheduler.server.js) is intentionally NOT imported here - prices on
+// a live store should only change when you explicitly trigger a sync (Dashboard "Update
+// All Prices", Products page "Sync All Prices", or your own external call to
+// /api/cron-sync). The unattended nightly job used to run for every installed shop with
+// no action from you; re-add the import below only if you actually want that back.
+// import "./scheduler.server.js";
 
 export const streamTimeout = 5000;
 
