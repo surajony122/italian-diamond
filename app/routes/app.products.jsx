@@ -22,6 +22,7 @@ import {
   DropZone,
   ProgressBar,
   Tooltip,
+  List,
 } from "@shopify/polaris";
 import { ChevronDownIcon, ChevronUpIcon, ExportIcon, ImportIcon, InfoIcon } from '@shopify/polaris-icons';
 import { authenticate } from "../shopify.server";
