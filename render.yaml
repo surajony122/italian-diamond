@@ -6,20 +6,9 @@ services:
     dockerfilePath: ./Dockerfile
     autoDeployTrigger: commit
     healthCheckPath: /
-    # NOTE: Render's Free plan does not support persistent Disks (that needs Starter or
-    # above), so there is no `disk:` block here. Prisma's SQLite file (sessions,
-    # AppSettings, AuditLog) lives on the container's ephemeral filesystem and WILL be
-    # wiped on every deploy, and likely on every cold start after the free instance spins
-    # down from inactivity. In practice that means merchants may need to reinstall/re-auth
-    # periodically and your gold rate/making charge settings can reset to defaults.
-    # Fine to start on Free for a quick check; when you're ready for real merchants, either
-    # upgrade this service to a paid plan and add:
-    #   disk:
-    #     name: gold-price-data
-    #     mountPath: /app/prisma
-    #     sizeGB: 1
-    # or switch the datasource to an external database (e.g. a free-tier hosted Postgres)
-    # so data survives regardless of plan/disk.
+    # No `disk:` block needed (and Render's Free plan doesn't support one anyway) -
+    # data now lives in an external Postgres via DATABASE_URL, not on this container's
+    # ephemeral filesystem, so it survives redeploys and cold-start-from-sleep on any plan.
     envVars:
       - key: NODE_ENV
         value: production
@@ -35,8 +24,12 @@ services:
       # `shopify app deploy` so Shopify's own app config matches.
       - key: SHOPIFY_APP_URL
         sync: false
+      # Connection string for an external Postgres (e.g. Neon, Supabase free tier).
+      # Prisma's schema.prisma reads this via env("DATABASE_URL").
+      - key: DATABASE_URL
+        sync: false
       # Required to authorize calls to /api/cron-sync - generate once and reuse it as the
-      # `?secret=` query param when wiring up Render's Cron Job (or an external scheduler)
+      # `?secret=` query param when wiring up an external scheduler (e.g. cron-job.org)
       # to POST that endpoint.
       - key: CRON_SECRET
         generateValue: true

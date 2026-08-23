@@ -15,11 +15,14 @@ COPY . .
 
 RUN npm run build
 
-# Run Prisma setup at BUILD time, not container start. Render's free-tier health check
-# kills the process if it doesn't bind $PORT quickly enough, and "prisma generate" +
-# "migrate deploy" running first (the old `docker-start` script) can eat that whole
-# window before the server ever starts listening. Doing it here means the runtime CMD
-# only has to do one thing: bind the port immediately.
-RUN npx prisma generate && npx prisma migrate deploy
+# "prisma generate" only needs the schema (no DB connection), so it's safe and fast to
+# run at BUILD time - keeps it off the runtime critical path that Render's free-tier
+# health check times out on (see the earlier SQLite-era fix for why that matters).
+RUN npx prisma generate
 
-CMD ["npm", "run", "start"]
+# "prisma migrate deploy" DOES need a live connection to the real database (now an
+# external Postgres, not a local file), so it has to run at container START, once
+# DATABASE_URL is actually available. Against an already-up-to-date DB this is fast
+# (a metadata check, not a rebuild), so it shouldn't reintroduce the startup-timeout
+# problem - only the very first deploy pays the cost of creating the schema.
+CMD ["sh", "-c", "npx prisma migrate deploy && npm run start"]
