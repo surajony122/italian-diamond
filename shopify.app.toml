@@ -2,7 +2,7 @@
 
 client_id = "ac7071b9e2c888a3bb94f937dda0bdfb"
 name = "Gold price"
-application_url = "https://example.com"
+application_url = "https://gold-price-ql0h.onrender.com"
 embedded = true
 
 [access_scopes]
@@ -45,7 +45,7 @@ api_version = "2026-07"
   topics = [ "app/scopes_update" ]
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://gold-price-ql0h.onrender.com/api/auth" ]
 
 [build]
 include_config_on_deploy = true
