@@ -1,0 +1,78 @@
+{% assign breakdown_json = product.selected_or_first_available_variant.metafields.custom.price_breakdown %}
+
+{% if breakdown_json %}
+  {% assign breakdown = breakdown_json.value %}
+  <div class="app-price-breakdown-wrapper" style="background-color: #faf9f6; border-radius: 12px; padding: 20px; font-family: sans-serif; color: #333; max-width: 400px; margin: 15px 0;">
+    
+    <div style="display: flex; background-color: white; border-radius: 20px; padding: 4px; margin-bottom: 20px;">
+      <div style="flex: 1; text-align: center; background-color: #8c5a4f; color: white; padding: 10px 0; border-radius: 16px; font-weight: bold; font-size: 14px;">
+        Price Breakup
+      </div>
+      <div style="flex: 1; text-align: center; color: #888; padding: 10px 0; font-weight: 500; font-size: 14px;">
+        Price Comparison
+      </div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+      <div>{{ breakdown.settings.karat }} Gold ({{ breakdown.settings.goldWeight }}g @ ₹{{ breakdown.settings.goldRate }}/g)</div>
+      <div style="font-weight: 600;">₹{{ breakdown.goldValue }}</div>
+    </div>
+
+    {% if breakdown.parsedDiamonds %}
+      <div style="margin-bottom: 15px; font-size: 14px; color: #444;">
+        <div style="display: flex; justify-content: space-between;">
+          <div>Diamond Total</div>
+          <div style="font-weight: 600;">₹{{ breakdown.diamondPrice }}</div>
+        </div>
+        <div style="padding-left: 10px; margin-top: 5px; font-size: 12px; color: #666; border-left: 2px solid #eaeaea;">
+          {% for diamond in breakdown.parsedDiamonds %}
+            <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
+              <span>{{ diamond.quantity }}x {{ diamond.shape }} ({{ diamond.carat }}ct)</span>
+              <span>₹{{ diamond.price }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% else %}
+      <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+        <div>Diamond (Base Price)</div>
+        <div style="font-weight: 600;">₹{{ breakdown.diamondPrice }}</div>
+      </div>
+    {% endif %}
+
+    <div style="display: flex; justify-content: space-between; margin-bottom: 15px; font-size: 14px; color: #444;">
+      <div>Making Charges</div>
+      <div style="font-weight: 600;">₹{{ breakdown.makingCharges }}</div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 14px; color: #444;">
+      <div>GST ({{ breakdown.settings.gstPercentage }}%)</div>
+      <div style="font-weight: 600;">₹{{ breakdown.gst }}</div>
+    </div>
+
+    <div style="border-top: 1px solid #eaeaea; padding-top: 15px; display: flex; justify-content: space-between; font-size: 16px; color: #000;">
+      <div style="font-weight: bold;">Total</div>
+      <div style="font-weight: bold;">₹{{ breakdown.finalPrice }}</div>
+    </div>
+
+  </div>
+
+  <script>
+    // Listen for variant changes on the product page and refresh the page or update DOM
+    // For simplicity, a hard refresh when variant ID changes in URL is a common fallback
+    // Modern themes fire 'variant:changed' events, but they differ by theme.
+    document.addEventListener("change", function(event) {
+      if (event.target.name === "id") {
+        setTimeout(() => location.reload(), 300); // Reload to fetch new metafields for the selected variant
+      }
+    });
+  </script>
+{% endif %}
+
+{% schema %}
+{
+  "name": "Price Breakup",
+  "target": "section",
+  "settings": []
+}
+{% endschema %}

@@ -1,0 +1,935 @@
+import { useEffect, useState, useCallback } from "react";
+import { useFetcher, useLoaderData, useSubmit, Form, useNavigation } from "react-router";
+import { useAppBridge } from "@shopify/app-bridge-react";
+import { boundary } from "@shopify/shopify-app-react-router/server";
+import {
+  Page,
+  Layout,
+  Card,
+  Text,
+  Badge,
+  TextField,
+  Button,
+  InlineStack,
+  BlockStack,
+  Select,
+  Filters,
+  SkeletonPage,
+  SkeletonBodyText,
+  SkeletonDisplayText,
+  Divider,
+  Icon,
+  Modal,
+  Box,
+  DropZone,
+  ProgressBar,
+} from "@shopify/polaris";
+import { ChevronDownIcon, ChevronUpIcon, ExportIcon, ImportIcon } from '@shopify/polaris-icons';
+import { authenticate } from "../shopify.server";
+import prisma from "../db.server";
+import { calculateFinalPrice, parseDiamondText } from "../services/pricing";
+import { runBulkSync } from "../services/syncEngine";
+export const loader = async ({ request }) => {
+  const { admin } = await authenticate.admin(request);
+  const url = new URL(request.url);
+  const q = url.searchParams.get("q") || "";
+  const status = url.searchParams.get("status") || "ALL";
+
+  let searchQuery = [];
+  if (q) searchQuery.push(`title:*${q}*`);
+  if (status !== "ALL" && status !== "NEEDS_WEIGHT") searchQuery.push(`status:${status}`);
+  const queryStr = searchQuery.length > 0 ? searchQuery.join(" AND ") : "";
+
+  const response = await admin.graphql(`
+    query getProducts($queryStr: String) {
+      products(first: 50, query: $queryStr) {
+        edges {
+          node {
+            id
+            title
+            status
+            variants(first: 50) {
+              edges {
+                node {
+                  id
+                  title
+                  price
+                  sku
+                  inventoryItem {
+                    measurement {
+                      weight {
+                        value
+                      }
+                    }
+                  }
+                  goldWeight: metafield(namespace: "custom", key: "gold_weight") {
+                    value
+                  }
+                  diamondPrice: metafield(namespace: "custom", key: "diamond_price") {
+                    value
+                  }
+                  originalPrice: metafield(namespace: "custom", key: "original_price") {
+                    value
+                  }
+                  priceBreakdown: metafield(namespace: "custom", key: "price_breakdown") {
+                    value
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `, {
+    variables: { queryStr: queryStr || null }
+  });
+
+  const { data } = await response.json();
+  
+  const products = data.products.edges.map(productEdge => {
+    const product = productEdge.node;
+    return {
+      id: product.id,
+      title: product.title,
+      status: product.status,
+      variants: product.variants.edges.map(variantEdge => {
+        const variant = variantEdge.node;
+        return {
+          variantId: variant.id,
+          variantTitle: variant.title,
+          sku: variant.sku,
+          price: variant.price,
+          originalPrice: variant.originalPrice,
+          goldWeight: variant.goldWeight?.value || variant.inventoryItem?.measurement?.weight?.value?.toString() || "",
+          diamondPrice: variant.diamondPrice?.value || variant.price,
+          priceBreakdown: variant.priceBreakdown?.value || null,
+        };
+      })
+    };
+  });
+
+  let finalProducts = products;
+  if (status === "NEEDS_WEIGHT") {
+    finalProducts = products.filter(p => p.variants.some(v => !v.goldWeight || parseFloat(v.goldWeight) === 0));
+  }
+
+  return { products: finalProducts, q, status };
+};
+
+export const action = async ({ request }) => {
+  const { admin, session } = await authenticate.admin(request);
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  if (intent === "global_sync") {
+    let appSettings = await prisma.appSettings.findUnique({ where: { shop: session.shop } });
+    if (!appSettings) return null;
+    await runBulkSync(admin, appSettings);
+    return null;
+  }
+
+  if (intent === "save_variant") {
+    const variantId = formData.get("variantId");
+    const goldWeight = parseFloat(formData.get("goldWeight"));
+    const diamondPrice = parseFloat(formData.get("diamondPrice"));
+    
+    // 1. Get settings and variant options
+    let appSettings = await prisma.appSettings.findUnique({ where: { shop: session.shop } });
+    
+    const variantQuery = await admin.graphql(`
+      query {
+        productVariant(id: "${variantId}") {
+          price
+          title
+          selectedOptions { value }
+          product {
+            id
+            title
+            diamondInfo1: metafield(namespace: "custom", key: "diamond") { value }
+            diamondInfo2: metafield(namespace: "custom", key: "diamond_info") { value }
+          }
+        }
+      }
+    `);
+    const varData = await variantQuery.json();
+    const variantNode = varData.data.productVariant;
+    const optionValues = variantNode.selectedOptions.map(o => o.value.toUpperCase());
+
+    // 2. Detect Karat
+    let karatMultiplier = 1.0;
+    let detectedKarat = "24K";
+    if (optionValues.some(v => v.includes("9K") || v.includes("9 KT"))) { karatMultiplier = 0.375; detectedKarat = "9K"; }
+    else if (optionValues.some(v => v.includes("10K") || v.includes("10 KT"))) { karatMultiplier = 0.4167; detectedKarat = "10K"; }
+    else if (optionValues.some(v => v.includes("14K") || v.includes("14 KT"))) { karatMultiplier = 0.5833; detectedKarat = "14K"; }
+    else if (optionValues.some(v => v.includes("18K") || v.includes("18 KT"))) { karatMultiplier = 0.7500; detectedKarat = "18K"; }
+    else if (optionValues.some(v => v.includes("22K") || v.includes("22 KT"))) { karatMultiplier = 0.9167; detectedKarat = "22K"; }
+
+    const variantGoldRate = appSettings.goldRate * karatMultiplier;
+    
+    // -- SMART TEXT PARSER LOGIC --
+    const diamondInfoText = variantNode.product.diamondInfo1?.value || variantNode.product.diamondInfo2?.value || "";
+    let finalDiamondPrice = 0;
+    
+    const parserResult = parseDiamondText(diamondInfoText, appSettings.diamondBasePrice || 26000);
+    if (parserResult.parsedDiamonds.length > 0 && !parserResult.diamondParsingError) {
+      finalDiamondPrice = parserResult.calculatedDiamondPrice;
+    }
+    
+    // 3. Calculate new final price
+    const calculated = calculateFinalPrice({
+      diamondPrice: finalDiamondPrice,
+      goldWeight,
+      goldRate: variantGoldRate,
+      makingChargePerGram: appSettings.makingChargePerGram,
+      gstPercentage: appSettings.gstPercentage
+    });
+    
+    calculated.settings = {
+      goldRate: variantGoldRate.toFixed(2),
+      makingChargePerGram: appSettings.makingChargePerGram,
+      gstPercentage: appSettings.gstPercentage,
+      goldWeight: goldWeight,
+      karat: detectedKarat
+    };
+    if (parserResult.parsedDiamonds.length > 0) {
+      calculated.parsedDiamonds = parserResult.parsedDiamonds;
+    }
+    if (parserResult.diamondParsingError) {
+      calculated.diamondParsingError = true;
+    }
+
+    // 4. Update Variant Price and Metafields via GraphQL
+    const metafields = [];
+    if (!isNaN(goldWeight)) metafields.push({ namespace: "custom", key: "gold_weight", type: "number_decimal", value: goldWeight.toString() });
+    if (!isNaN(diamondPrice)) metafields.push({ namespace: "custom", key: "diamond_price", type: "number_decimal", value: diamondPrice.toString() });
+    metafields.push({ namespace: "custom", key: "price_breakdown", type: "json", value: JSON.stringify(calculated) });
+
+    const response = await admin.graphql(`
+      mutation productVariantUpdate($input: ProductVariantInput!) {
+        productVariantUpdate(input: $input) {
+          userErrors { field message }
+        }
+      }
+    `, {
+      variables: { input: { id: variantId, price: calculated.finalPrice.toString(), metafields } }
+    });
+
+    const { data } = await response.json();
+    if (data.productVariantUpdate.userErrors.length > 0) {
+      return { success: false, message: "Failed: " + data.productVariantUpdate.userErrors[0].message };
+    }
+
+    await prisma.auditLog.create({
+      data: {
+        shop: session.shop,
+        productId: variantNode.product.id,
+        variantId: variantId,
+        title: `${variantNode.product.title} - ${variantNode.title}`,
+        oldPrice: parseFloat(variantNode.price),
+        newPrice: calculated.finalPrice,
+        reason: "Manual Save"
+      }
+    });
+
+    return { success: true, message: "Variant recalculated and saved!" };
+  }
+
+  if (intent === "bulk_update") {
+    const variantIds = JSON.parse(formData.get("variantIds"));
+    const bulkGoldWeight = formData.get("bulkGoldWeight");
+
+    if (!bulkGoldWeight) return { success: false, message: "No gold weight provided." };
+
+    const metafields = variantIds.map(id => ({
+      ownerId: id,
+      namespace: "custom",
+      key: "gold_weight",
+      type: "number_decimal",
+      value: bulkGoldWeight.toString()
+    }));
+
+    const response = await admin.graphql(`
+      mutation variantMetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          userErrors { field message }
+        }
+      }
+    `, {
+      variables: { metafields }
+    });
+
+    const { data } = await response.json();
+    if (data.metafieldsSet.userErrors.length > 0) {
+      return { success: false, message: "Bulk update failed." };
+    }
+
+    return new Response(JSON.stringify({ message: "Product updated successfully!" }), {
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
+  if (intent === "backup_prices") {
+    let hasNextPage = true;
+    let cursor = null;
+    let successCount = 0;
+    
+    try {
+      while (hasNextPage) {
+        const query = `
+          query getProducts($cursor: String) {
+            products(first: 50, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              edges {
+                node {
+                  variants(first: 100) {
+                    edges {
+                      node {
+                        id
+                        price
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `;
+        const response = await admin.graphql(query, { variables: { cursor } });
+        const { data } = await response.json();
+        
+        let metafieldsToSet = [];
+        for (const pEdge of data.products.edges) {
+          for (const vEdge of pEdge.node.variants.edges) {
+            const variant = vEdge.node;
+            metafieldsToSet.push({
+              ownerId: variant.id,
+              namespace: "custom",
+              key: "original_price",
+              type: "number_decimal",
+              value: variant.price
+            });
+          }
+        }
+        
+        const MUTATION = `
+          mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+            metafieldsSet(metafields: $metafields) {
+              userErrors { field message }
+            }
+          }
+        `;
+        for (let i = 0; i < metafieldsToSet.length; i += 25) {
+          const chunk = metafieldsToSet.slice(i, i + 25);
+          await admin.graphql(MUTATION, { variables: { metafields: chunk } });
+          successCount += chunk.length;
+        }
+        
+        hasNextPage = data.products.pageInfo.hasNextPage;
+        cursor = data.products.pageInfo.endCursor;
+      }
+      
+      return new Response(JSON.stringify({ message: `Successfully backed up original prices for ${successCount} variants!` }), {
+        headers: { "Content-Type": "application/json" }
+      });
+    } catch (e) {
+      return new Response(JSON.stringify({ message: "Failed to backup prices: " + e.message }), {
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  }
+
+  return new Response(JSON.stringify({ error: "Invalid intent" }), { status: 400 });
+};
+
+export default function Products() {
+  const { products, q, status } = useLoaderData();
+  const fetcher = useFetcher();
+  const shopify = useAppBridge();
+  const submit = useSubmit();
+  const navigation = useNavigation();
+
+  const [selectedVariants, setSelectedVariants] = useState([]);
+  const [bulkWeight, setBulkWeight] = useState("");
+  
+  const [queryValue, setQueryValue] = useState(q || "");
+  const [statusValue, setStatusValue] = useState(status || "ALL");
+  const [exportUrl, setExportUrl] = useState(null);
+  const [isExporting, setIsExporting] = useState(false);
+  
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [isImporting, setIsImporting] = useState(false);
+  
+  // Progress Bar State
+  const [progressModal, setProgressModal] = useState({ open: false, title: "", processed: 0 });
+  
+  // System Check State
+  const [isSystemCheckModalOpen, setIsSystemCheckModalOpen] = useState(false);
+  const [systemCheckResults, setSystemCheckResults] = useState(null);
+
+  const runSystemCheck = () => {
+    const missingWeights = products.reduce((count, p) => count + p.variants.filter(v => !v.goldWeight || parseFloat(v.goldWeight) === 0).length, 0);
+    const missingBackups = products.reduce((count, p) => count + p.variants.filter(v => !v.originalPrice?.value).length, 0);
+    const totalVariants = products.reduce((count, p) => count + p.variants.length, 0);
+    
+    setSystemCheckResults({
+      missingWeights,
+      missingBackups,
+      totalVariants,
+      passed: missingWeights === 0 && missingBackups === 0,
+    });
+    setIsSystemCheckModalOpen(true);
+  };
+  
+  const startProgressTask = async (endpoint, title) => {
+    setProgressModal({ open: true, title, processed: 0 });
+    let hasNextPage = true;
+    let cursor = null;
+    let totalProcessed = 0;
+    
+    try {
+      while (hasNextPage) {
+        const formData = new FormData();
+        if (cursor) formData.append("cursor", cursor);
+        
+        const res = await fetch(endpoint, {
+          method: "POST",
+          body: formData
+        });
+        
+        if (!res.ok) throw new Error("Server error");
+        const data = await res.json();
+        
+        if (!data.success) throw new Error(data.error || "Task failed");
+        
+        totalProcessed += data.variantsProcessed;
+        setProgressModal({ open: true, title, processed: totalProcessed });
+        
+        hasNextPage = data.hasNextPage;
+        cursor = data.nextCursor;
+      }
+      shopify.toast.show(`${title} completed successfully!`);
+    } catch (e) {
+      shopify.toast.show(`Error: ${e.message}`, { isError: true });
+    } finally {
+      setProgressModal(prev => ({ ...prev, open: false }));
+      submit({ q: queryValue, status: statusValue }); // refresh page
+    }
+  };
+  
+  const handleDropZoneDrop = useCallback(
+    (_dropFiles, acceptedFiles, _rejectedFiles) => setImportFile(acceptedFiles[0]),
+    [],
+  );
+  
+  const handleImportSubmit = async () => {
+    if (!importFile) return;
+    setIsImporting(true);
+    const formData = new FormData();
+    formData.append("file", importFile);
+    
+    try {
+      const res = await fetch("/api/import", {
+        method: "POST",
+        body: formData
+      });
+      const data = await res.json();
+      if (res.ok) {
+        shopify.toast.show(data.message);
+        setIsImportModalOpen(false);
+        setImportFile(null);
+      } else {
+        throw new Error(data.error || "Import failed");
+      }
+    } catch (e) {
+      shopify.toast.show(e.message, { isError: true });
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (fetcher.data?.message) {
+      shopify.toast.show(fetcher.data.message);
+      setSelectedVariants([]);
+    }
+  }, [fetcher.data, shopify]);
+
+  const toggleSelect = (variantId) => {
+    setSelectedVariants(prev => 
+      prev.includes(variantId) ? prev.filter(id => id !== variantId) : [...prev, variantId]
+    );
+  };
+
+  const toggleProductSelect = (variantIds, isChecked) => {
+    if (isChecked) {
+      setSelectedVariants(prev => [...new Set([...prev, ...variantIds])]);
+    } else {
+      setSelectedVariants(prev => prev.filter(id => !variantIds.includes(id)));
+    }
+  };
+
+  const handleBulkSubmit = () => {
+    if (selectedVariants.length === 0) return;
+    const formData = new FormData();
+    formData.append("intent", "bulk_update");
+    formData.append("variantIds", JSON.stringify(selectedVariants));
+    formData.append("bulkGoldWeight", bulkWeight);
+    fetcher.submit(formData, { method: "POST" });
+  };
+
+  const handleFiltersQueryChange = useCallback(
+    (value) => {
+      setQueryValue(value);
+      submit({ q: value, status: statusValue });
+    },
+    [submit, statusValue],
+  );
+
+  const handleStatusChange = useCallback(
+    (value) => {
+      setStatusValue(value[0]);
+      submit({ q: queryValue, status: value[0] });
+    },
+    [submit, queryValue],
+  );
+
+  const filters = [
+    {
+      key: 'status',
+      label: 'Status',
+      filter: (
+        <Select
+          label="Status"
+          options={[
+            {label: 'All Products', value: 'ALL'},
+            {label: 'Needs Weight (New)', value: 'NEEDS_WEIGHT'},
+            {label: 'Active Only', value: 'ACTIVE'},
+            {label: 'Draft Only', value: 'DRAFT'}
+          ]}
+          value={statusValue}
+          onChange={(val) => handleStatusChange([val])}
+        />
+      ),
+      shortcut: true,
+    },
+  ];
+
+  const allVariantIds = products.flatMap(p => p.variants.map(v => v.variantId));
+
+  if (navigation.state === "loading" && navigation.location.pathname === "/app/products") {
+    return (
+      <SkeletonPage primaryAction>
+        <Layout>
+          <Layout.Section>
+            <Card>
+              <SkeletonBodyText lines={2} />
+            </Card>
+            <br />
+            <Card>
+              <SkeletonBodyText lines={10} />
+            </Card>
+          </Layout.Section>
+        </Layout>
+      </SkeletonPage>
+    );
+  }
+
+  const handleGlobalSync = () => {
+    setIsSystemCheckModalOpen(false);
+    startProgressTask("/api/sync-chunk", "Syncing All Prices");
+  };
+
+  return (
+    <Page 
+      title="Products & Bulk Editor"
+      primaryAction={{
+        content: 'Sync All Prices',
+        onAction: runSystemCheck,
+        loading: fetcher.state !== "idle"
+      }}
+      secondaryActions={[
+        {
+          content: 'Import CSV',
+          icon: ImportIcon,
+          onAction: () => setIsImportModalOpen(true),
+        },
+        {
+          content: 'Backup Original Prices',
+          onAction: () => startProgressTask("/api/backup-chunk", "Backing up Original Prices")
+        },
+        {
+          content: 'Export to CSV',
+          icon: ExportIcon,
+          loading: isExporting,
+          onAction: async () => {
+            try {
+              setIsExporting(true);
+              let url = '/api/export';
+              if (selectedVariants.length > 0) {
+                url += `?variantIds=${encodeURIComponent(JSON.stringify(selectedVariants))}`;
+              }
+              const res = await fetch(url);
+              if (!res.ok) throw new Error('Export failed');
+              const blob = await res.blob();
+              const objectUrl = window.URL.createObjectURL(blob);
+              setExportUrl(objectUrl);
+            } catch (err) {
+              shopify.toast.show(err.message, { isError: true });
+            } finally {
+              setIsExporting(false);
+            }
+          },
+        }
+      ]}
+    >
+      <Modal
+        open={isImportModalOpen}
+        onClose={() => { setIsImportModalOpen(false); setImportFile(null); }}
+        title="Import CSV"
+        primaryAction={{
+          content: 'Upload and Import',
+          onAction: handleImportSubmit,
+          loading: isImporting,
+          disabled: !importFile
+        }}
+        secondaryActions={[
+          {
+            content: 'Cancel',
+            onAction: () => { setIsImportModalOpen(false); setImportFile(null); }
+          }
+        ]}
+      >
+        <Modal.Section>
+          <BlockStack gap="400">
+            <Text as="p">
+              Upload the CSV file you exported and modified. Make sure not to change the "Handle" or "Variant SKU" columns.
+            </Text>
+            <DropZone onDrop={handleDropZoneDrop} variableHeight allowMultiple={false} accept=".csv">
+              {importFile ? (
+                <BlockStack alignment="center" inlineAlign="center">
+                  <Box padding="400">
+                    <Text variant="bodyMd" as="p" alignment="center">
+                      Ready to upload: <strong>{importFile.name}</strong>
+                    </Text>
+                  </Box>
+                </BlockStack>
+              ) : (
+                <DropZone.FileUpload actionTitle="Add CSV file" />
+              )}
+            </DropZone>
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
+
+      <Modal
+        open={!!exportUrl}
+        onClose={() => setExportUrl(null)}
+        title="Export Ready"
+        primaryAction={{
+          content: 'Download CSV',
+          url: exportUrl,
+          download: `products_export_${new Date().toISOString().split('T')[0]}.csv`,
+          onAction: () => setExportUrl(null)
+        }}
+      >
+        <Modal.Section>
+          <Text as="p">Your CSV file has been generated securely and is ready to download.</Text>
+        </Modal.Section>
+      </Modal>
+
+      <Modal
+        open={progressModal.open}
+        onClose={() => {}}
+        title={progressModal.title}
+        loading={true}
+      >
+        <Modal.Section>
+          <BlockStack gap="400">
+            <Text as="p">Please keep this tab open while the operation completes.</Text>
+            <ProgressBar progress={Math.min((progressModal.processed / (progressModal.processed + 25)) * 100, 95)} size="small" tone="primary" />
+            <Text as="p" alignment="center">
+              Processed: {progressModal.processed} variants
+            </Text>
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
+
+      <Modal
+        open={isSystemCheckModalOpen}
+        onClose={() => setIsSystemCheckModalOpen(false)}
+        title="Pre-Flight System Check"
+        primaryAction={{
+          content: systemCheckResults?.passed ? 'Proceed with Sync' : 'Sync Anyway (Override)',
+          onAction: handleGlobalSync,
+          destructive: !systemCheckResults?.passed
+        }}
+        secondaryActions={[
+          {
+            content: 'Cancel',
+            onAction: () => setIsSystemCheckModalOpen(false),
+          },
+        ]}
+      >
+        <Modal.Section>
+          {systemCheckResults && (
+            <BlockStack gap="400">
+              {systemCheckResults.passed ? (
+                <Text as="p" tone="success">✅ All systems go! Your store is fully configured and ready for price synchronization.</Text>
+              ) : (
+                <Text as="p" tone="critical">⚠️ Warning: The system check found potential issues. Syncing now may result in incomplete data.</Text>
+              )}
+              
+              <List type="bullet">
+                <List.Item>
+                  <Text as="span" fontWeight="bold">Missing Gold Weights: </Text>
+                  {systemCheckResults.missingWeights > 0 ? (
+                    <Text as="span" tone="critical">{systemCheckResults.missingWeights} variants</Text>
+                  ) : (
+                    <Text as="span" tone="success">0 variants</Text>
+                  )}
+                </List.Item>
+                <List.Item>
+                  <Text as="span" fontWeight="bold">Missing Original Price Backups: </Text>
+                  {systemCheckResults.missingBackups > 0 ? (
+                    <Text as="span" tone="critical">{systemCheckResults.missingBackups} variants</Text>
+                  ) : (
+                    <Text as="span" tone="success">0 variants</Text>
+                  )}
+                </List.Item>
+              </List>
+            </BlockStack>
+          )}
+        </Modal.Section>
+      </Modal>
+      
+      <Layout>
+        <Layout.Section>
+          
+          <Card padding="0">
+            <div style={{padding: '16px'}}>
+              <Filters
+                queryValue={queryValue}
+                filters={filters}
+                onQueryChange={handleFiltersQueryChange}
+                onQueryClear={() => handleFiltersQueryChange("")}
+                onClearAll={() => {
+                  setQueryValue("");
+                  setStatusValue("ALL");
+                  submit({ q: "", status: "ALL" });
+                }}
+              />
+            </div>
+
+            {selectedVariants.length > 0 && (
+              <div style={{padding: '16px', backgroundColor: '#f4f6f8', borderTop: '1px solid #dfe3e8', borderBottom: '1px solid #dfe3e8'}}>
+                <InlineStack gap="400" align="start" blockAlign="center">
+                  <Text variant="bodyMd" fontWeight="bold">{selectedVariants.length} variants selected</Text>
+                  <div style={{width: '200px'}}>
+                    <TextField
+                      type="number"
+                      placeholder="Bulk set Gold Weight"
+                      value={bulkWeight}
+                      onChange={setBulkWeight}
+                      autoComplete="off"
+                    />
+                  </div>
+                  <Button onClick={handleBulkSubmit} variant="primary" loading={fetcher.state !== "idle"}>
+                    Apply to Selected
+                  </Button>
+                </InlineStack>
+              </div>
+            )}
+
+        {/* Grouped Table (Kept Custom for Nested Variants UI) */}
+        <div style={{ overflow: 'hidden', backgroundColor: 'white' }}>
+          <table style={{width: '100%', borderCollapse: 'collapse', textAlign: 'left'}}>
+            <thead>
+              <tr style={{borderBottom: '1px solid #e1e3e5', backgroundColor: '#f9fafb'}}>
+                <th style={{padding: '16px', width: '40px'}}>
+                  <input 
+                    type="checkbox" 
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedVariants(allVariantIds);
+                      else setSelectedVariants([]);
+                    }}
+                    checked={allVariantIds.length > 0 && selectedVariants.length === allVariantIds.length}
+                    style={{width: '16px', height: '16px', cursor: 'pointer'}}
+                  />
+                </th>
+                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Product / Variant</th>
+                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Diamond Base (₹)</th>
+                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Gold Weight (g)</th>
+                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Original Backup</th>
+                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Live Final Price</th>
+                <th style={{padding: '16px', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#637381'}}>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {products.length === 0 && (
+                <tr>
+                  <td colSpan="6" style={{padding: '32px', textAlign: 'center', color: '#637381'}}>
+                    No products found matching your filters.
+                  </td>
+                </tr>
+              )}
+              {products.map(product => (
+                <ProductGroup 
+                  key={product.id} 
+                  product={product} 
+                  fetcher={fetcher} 
+                  selectedVariants={selectedVariants} 
+                  onToggleSelect={toggleSelect} 
+                  onToggleProductSelect={toggleProductSelect}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+          </Card>
+        </Layout.Section>
+      </Layout>
+    </Page>
+  );
+}
+
+function ProductGroup({ product, fetcher, selectedVariants, onToggleSelect, onToggleProductSelect }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const allVariantIds = product.variants.map(v => v.variantId);
+  const isAllSelected = allVariantIds.length > 0 && allVariantIds.every(id => selectedVariants.includes(id));
+
+  return (
+    <>
+      <tr style={{backgroundColor: '#f9fafb', borderBottom: '1px solid #e1e3e5', cursor: 'pointer'}} onClick={() => setIsOpen(!isOpen)}>
+        <td style={{padding: '16px'}} onClick={(e) => e.stopPropagation()}>
+          <InlineStack gap="300" align="start" blockAlign="center">
+            <input 
+              type="checkbox" 
+              checked={isAllSelected}
+              onChange={(e) => onToggleProductSelect(allVariantIds, e.target.checked)}
+              style={{width: '16px', height: '16px', cursor: 'pointer'}}
+            />
+            <div onClick={() => setIsOpen(!isOpen)} style={{display: 'flex', alignItems: 'center'}}>
+              <Icon source={isOpen ? ChevronUpIcon : ChevronDownIcon} color="base" />
+            </div>
+          </InlineStack>
+        </td>
+        <td colSpan="6" style={{padding: '16px'}}>
+          <InlineStack gap="300" align="start" blockAlign="center">
+            <Text variant="bodyMd" fontWeight="bold">{product.title}</Text>
+            <Badge tone={product.status === 'ACTIVE' ? 'success' : 'info'}>
+              {product.status}
+            </Badge>
+            {product.variants.some(v => !v.goldWeight || parseFloat(v.goldWeight) === 0) && (
+              <Badge tone="warning">NEW (Needs Weight)</Badge>
+            )}
+          </InlineStack>
+        </td>
+      </tr>
+      {isOpen && product.variants.map((variant, index) => (
+        <VariantRow 
+          key={variant.variantId} 
+          variant={variant} 
+          fetcher={fetcher} 
+          isSelected={selectedVariants.includes(variant.variantId)} 
+          onToggle={() => onToggleSelect(variant.variantId)}
+          isLast={index === product.variants.length - 1}
+        />
+      ))}
+    </>
+  );
+}
+
+function VariantRow({ variant, fetcher, isSelected, onToggle, isLast }) {
+  let breakdown = null;
+  try {
+    if (variant.priceBreakdown) {
+      breakdown = JSON.parse(variant.priceBreakdown);
+    }
+  } catch (e) {}
+
+  const isSmartParsed = !!breakdown?.parsedDiamonds;
+  const initialDiamondPrice = isSmartParsed ? breakdown.diamondPrice.toString() : variant.diamondPrice;
+
+  const [diamondPrice, setDiamondPrice] = useState(initialDiamondPrice);
+  const [goldWeight, setGoldWeight] = useState(variant.goldWeight);
+
+  const hasChanged = diamondPrice !== initialDiamondPrice || goldWeight !== variant.goldWeight;
+
+  const handleSave = () => {
+    if (!hasChanged) return;
+    const formData = new FormData();
+    formData.append("intent", "save_variant");
+    formData.append("variantId", variant.variantId);
+    formData.append("diamondPrice", diamondPrice);
+    formData.append("goldWeight", goldWeight);
+    fetcher.submit(formData, { method: "POST", preventScrollReset: true });
+  };
+
+  return (
+    <tr style={{borderBottom: isLast ? 'none' : '1px solid #f4f6f8', transition: 'background-color 0.2s'}} onMouseOver={e => e.currentTarget.style.backgroundColor = '#fcfcfc'} onMouseOut={e => e.currentTarget.style.backgroundColor = 'transparent'}>
+      <td style={{padding: '16px'}}>
+        <input type="checkbox" checked={isSelected} onChange={onToggle} style={{width: '16px', height: '16px', cursor: 'pointer'}} />
+      </td>
+      <td style={{padding: '16px', paddingLeft: '32px'}}>
+        <Text variant="bodyMd" color="subdued">{variant.variantTitle !== 'Default Title' ? variant.variantTitle : 'Default Variant'}</Text>
+      </td>
+      <td style={{padding: '16px'}}>
+        <TextField
+          type="number"
+          step="0.01"
+          value={diamondPrice}
+          onChange={setDiamondPrice}
+          prefix="₹"
+          autoComplete="off"
+          disabled={isSmartParsed}
+          helpText={isSmartParsed ? "Auto-calculated" : ""}
+        />
+      </td>
+      <td style={{padding: '16px'}}>
+        <TextField
+          type="number"
+          step="0.01"
+          value={goldWeight}
+          onChange={setGoldWeight}
+          onBlur={handleSave}
+          placeholder="0.00"
+          autoComplete="off"
+        />
+      </td>
+      <td style={{padding: '16px'}}>
+        {variant.originalPrice?.value ? `₹${parseFloat(variant.originalPrice.value).toFixed(2)}` : <Text tone="subdued">None</Text>}
+      </td>
+      <td style={{padding: '16px'}}>
+        <Text variant="bodyMd" fontWeight="bold">₹{parseFloat(variant.price).toFixed(2)}</Text>
+        {breakdown && breakdown.settings && (
+          <div style={{fontSize: '11px', color: '#637381', marginTop: '4px', lineHeight: '1.4'}}>
+            {breakdown.settings.karat || "24K"} Gold ({breakdown.settings.goldWeight}g x ₹{breakdown.settings.goldRate}): ₹{breakdown.goldValue}<br/>
+            Making ({breakdown.settings.goldWeight}g x ₹{breakdown.settings.makingChargePerGram}): ₹{breakdown.makingCharges}<br/>
+            Diamond: ₹{breakdown.diamondPrice}
+            {breakdown.parsedDiamonds && breakdown.parsedDiamonds.map((d, i) => (
+              <span key={i}><br/>&nbsp;&nbsp;↳ {d.quantity}x {d.shape} ({d.carat}ct x ₹{d.rate}): ₹{d.price}</span>
+            ))}
+            {breakdown.diamondParsingError && (
+              <><br/><Badge tone="critical">Text Parse Error!</Badge></>
+            )}
+            <br/>
+            GST ({breakdown.settings.gstPercentage}%): ₹{breakdown.gst}
+          </div>
+        )}
+      </td>
+      <td style={{padding: '16px'}}>
+        {fetcher.state !== "idle" && hasChanged ? (
+          <Badge tone="info">Saving...</Badge>
+        ) : (
+          <Badge tone={hasChanged ? "warning" : "success"}>{hasChanged ? "Unsaved" : "Saved"}</Badge>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+export const headers = (headersArgs) => {
+  return boundary.headers(headersArgs);
+};

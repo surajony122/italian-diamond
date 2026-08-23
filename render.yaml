@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: gold-price
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    autoDeployTrigger: commit
+    healthCheckPath: /
+    disk:
+      name: gold-price-data
+      # Prisma's schema.prisma points at datasource url "file:dev.sqlite", which resolves
+      # relative to /app/prisma at runtime — mount the persistent disk there so the SQLite
+      # DB (sessions, AppSettings, AuditLog) survives restarts/redeploys instead of being
+      # wiped every time (Render's default web service disk is ephemeral).
+      mountPath: /app/prisma
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Set these in the Render dashboard (Environment tab) - do not commit real values.
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: SCOPES
+        value: write_products,write_metaobjects,write_metaobject_definitions
+      # Update this to the exact https://<your-service>.onrender.com URL Render assigns,
+      # then mirror it into shopify.app.toml's application_url/auth.redirect_urls and run
+      # `shopify app deploy` so Shopify's own app config matches.
+      - key: SHOPIFY_APP_URL
+        sync: false
+      # Required to authorize calls to /api/cron-sync - generate once and reuse it as the
+      # `?secret=` query param when wiring up Render's Cron Job (or an external scheduler)
+      # to POST that endpoint.
+      - key: CRON_SECRET
+        generateValue: true

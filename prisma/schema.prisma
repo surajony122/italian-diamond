@@ -1,0 +1,58 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "sqlite"
+  url      = "file:dev.sqlite"
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model AppSettings {
+  id                  Int      @id @default(autoincrement())
+  shop                String   @unique
+  goldRate            Float    @default(9800.0)
+  makingChargePerGram Float    @default(1500.0)
+  gstPercentage       Float    @default(3.0)
+  goldApiMode         String   @default("manual") // "manual" or "auto"
+  goldApiKey          String?
+  diamondBasePrice    Float    @default(26000.0)
+  lastSyncTime        DateTime?
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  shop      String
+  productId String
+  variantId String
+  title     String
+  oldPrice  Float?
+  newPrice  Float
+  reason    String   // e.g. "Manual Save", "Bulk Sync"
+  createdAt DateTime @default(now())
+}
