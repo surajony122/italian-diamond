@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { Page, Layout, Card, BlockStack, InlineStack, Text, Button, Select, TextField, Banner, Badge, ProgressBar, DataTable } from "@shopify/polaris";
+import { Page, Layout, Card, BlockStack, InlineStack, Text, Button, Select, TextField, Banner, Badge, ProgressBar, DataTable, Link } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { fetchLiveGoldRate } from "../services/goldApi";
@@ -41,23 +41,13 @@ export const action = async ({ request }) => {
 
   if (intent === "save_settings") {
     const goldRateRaw = formData.get("goldRate");
-    const makingRaw = formData.get("makingChargePerGram");
-    const gstRaw = formData.get("gstPercentage");
-    const diamondBaseRaw = formData.get("diamondBasePrice");
-
     const goldRate = goldRateRaw ? parseFloat(goldRateRaw) : NaN;
-    const makingChargePerGram = makingRaw ? parseFloat(makingRaw) : NaN;
-    const gstPercentage = gstRaw ? parseFloat(gstRaw) : NaN;
-    const diamondBasePrice = diamondBaseRaw ? parseFloat(diamondBaseRaw) : NaN;
-    
+
     const goldApiMode = formData.get("goldApiMode");
     const goldApiKey = formData.get("goldApiKey") || "";
 
     const dataToUpdate = { goldApiMode, goldApiKey };
     if (!isNaN(goldRate)) dataToUpdate.goldRate = goldRate;
-    if (!isNaN(makingChargePerGram)) dataToUpdate.makingChargePerGram = makingChargePerGram;
-    if (!isNaN(gstPercentage)) dataToUpdate.gstPercentage = gstPercentage;
-    if (!isNaN(diamondBasePrice)) dataToUpdate.diamondBasePrice = diamondBasePrice;
 
     settings = await prisma.appSettings.update({
       where: { shop: session.shop },
@@ -137,19 +127,13 @@ export default function Index() {
 
   const [goldApiKey, setGoldApiKey] = useState(settings.goldApiKey || "");
   const [goldRate, setGoldRate] = useState(settings.goldRate?.toString() || "");
-  const [makingChargePerGram, setMakingChargePerGram] = useState(settings.makingChargePerGram?.toString() || "");
-  const [gstPercentage, setGstPercentage] = useState(settings.gstPercentage?.toString() || "");
   const [goldApiMode, setGoldApiMode] = useState(settings.goldApiMode || "manual");
-  const [diamondBasePrice, setDiamondBasePrice] = useState(settings.diamondBasePrice?.toString() || "26000");
 
   useEffect(() => {
     setGoldApiKey(settings.goldApiKey || "");
     setGoldRate(settings.goldRate?.toString() || "");
-    setMakingChargePerGram(settings.makingChargePerGram?.toString() || "");
-    setGstPercentage(settings.gstPercentage?.toString() || "");
     setGoldApiMode(settings.goldApiMode || "manual");
-    setDiamondBasePrice(settings.diamondBasePrice?.toString() || "26000");
-  }, [settings.goldApiKey, settings.goldRate, settings.makingChargePerGram, settings.gstPercentage, settings.goldApiMode, settings.diamondBasePrice]);
+  }, [settings.goldApiKey, settings.goldRate, settings.goldApiMode]);
 
   return (
     <Page title="Gold Price Sync Dashboard" fullWidth>
@@ -172,6 +156,11 @@ export default function Index() {
                 <Text as="p"><strong>Current Gold Rate:</strong> ₹{settings.goldRate} / gm</Text>
                 <Text as="p"><strong>Making Charges:</strong> ₹{settings.makingChargePerGram} / gm</Text>
                 <Text as="p"><strong>GST:</strong> {settings.gstPercentage}%</Text>
+                <Text as="p"><strong>Diamond Base Price:</strong> ₹{settings.diamondBasePrice}/ct</Text>
+                <Text as="p" tone="subdued">
+                  Manage making charges, GST, and diamond pricing (including per-shape markup) on the{" "}
+                  <Link url="/app/pricing">Pricing Rules</Link> page.
+                </Text>
                 <Text as="p"><strong>Last Sync Time:</strong> {settings.lastSyncTime ? new Date(settings.lastSyncTime).toLocaleString() : "Never"}</Text>
               </BlockStack>
 
@@ -271,54 +260,23 @@ export default function Index() {
                   autoComplete="off"
                 />
 
-                <InlineStack gap="400" wrap={false}>
-                  {goldApiMode === 'manual' && (
-                    <div style={{flex: 1}}>
-                      <TextField
-                        label="Gold Rate (₹ per gm)"
-                        name="goldRate"
-                        type="number"
-                        step="0.01"
-                        value={goldRate}
-                        onChange={setGoldRate}
-                        autoComplete="off"
-                      />
-                    </div>
-                  )}
-                  <div style={{flex: 1}}>
+                {goldApiMode === 'manual' && (
+                  <div style={{maxWidth: '260px'}}>
                     <TextField
-                      label="Making Charges (₹ per gm)"
-                      name="makingChargePerGram"
+                      label="Gold Rate (₹ per gm)"
+                      name="goldRate"
                       type="number"
                       step="0.01"
-                      value={makingChargePerGram}
-                      onChange={setMakingChargePerGram}
+                      value={goldRate}
+                      onChange={setGoldRate}
                       autoComplete="off"
                     />
                   </div>
-                  <div style={{flex: 1}}>
-                    <TextField
-                      label="Diamond Base Price (₹/ct)"
-                      name="diamondBasePrice"
-                      type="number"
-                      step="1"
-                      value={diamondBasePrice}
-                      onChange={setDiamondBasePrice}
-                      autoComplete="off"
-                    />
-                  </div>
-                  <div style={{flex: 1}}>
-                    <TextField
-                      label="GST Percentage (%)"
-                      name="gstPercentage"
-                      type="number"
-                      step="0.01"
-                      value={gstPercentage}
-                      onChange={setGstPercentage}
-                      autoComplete="off"
-                    />
-                  </div>
-                </InlineStack>
+                )}
+                <Text as="p" tone="subdued">
+                  Making charges, GST, and diamond pricing have moved to the{" "}
+                  <Link url="/app/pricing">Pricing Rules</Link> page.
+                </Text>
 
                 <div style={{marginTop: '10px'}}>
                   <Button submit variant="primary" loading={isLoading && fetcher.formData?.get("intent") === "save_settings"}>

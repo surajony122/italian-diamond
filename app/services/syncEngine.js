@@ -91,7 +91,12 @@ export async function syncVariantPage(admin, appSettings, { cursor = null, pageS
     // -- SMART TEXT PARSER LOGIC --
     const diamondInfoText = variant.product.diamondInfo1?.value || variant.product.diamondInfo2?.value || "";
 
-    const parserResult = parseDiamondText(diamondInfoText, appSettings.diamondBasePrice || 26000);
+    const parserResult = parseDiamondText(
+      diamondInfoText,
+      appSettings.diamondBasePrice || 26000,
+      appSettings.shapeMarkups || {},
+      appSettings.defaultShapeMarkupPercent ?? 25
+    );
     let parsedDiamonds = parserResult.parsedDiamonds;
     let diamondParsingError = parserResult.diamondParsingError;
 

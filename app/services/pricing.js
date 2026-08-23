@@ -39,7 +39,15 @@ export function extractTextFromRichText(node) {
   return "";
 }
 
-export function parseDiamondText(diamondInfoText, diamondBasePrice = 26000) {
+/**
+ * @param diamondInfoText  raw description text/rich-text JSON to parse Shape/Carat/Quantity from
+ * @param diamondBasePrice ₹/ct base rate (AppSettings.diamondBasePrice)
+ * @param shapeMarkups     map of lowercased shape name -> markup percent, e.g. { round: 0, emerald: 0, pear: 25 }
+ *                         (AppSettings.shapeMarkups). A shape not present here uses defaultMarkupPercent.
+ * @param defaultMarkupPercent markup percent for any shape not explicitly listed in shapeMarkups
+ *                             (AppSettings.defaultShapeMarkupPercent)
+ */
+export function parseDiamondText(diamondInfoText, diamondBasePrice = 26000, shapeMarkups = {}, defaultMarkupPercent = 25) {
   let diamondParsingError = false;
   let parsedDiamonds = [];
   let calculatedDiamondPrice = 0;
@@ -94,15 +102,15 @@ export function parseDiamondText(diamondInfoText, diamondBasePrice = 26000) {
           const carat = carats[i];
           const qty = quantities[i] || 1;
           
-          let rate = diamondBasePrice;
           const shapeLower = shape.toLowerCase();
-          if (shapeLower !== "round" && shapeLower !== "emerald") {
-              rate = diamondBasePrice * 1.25;
-          }
+          const markupPercent = Object.prototype.hasOwnProperty.call(shapeMarkups, shapeLower)
+            ? shapeMarkups[shapeLower]
+            : defaultMarkupPercent;
+          const rate = diamondBasePrice * (1 + markupPercent / 100);
           const price = rate * carat;
           calculatedDiamondPrice += price;
-          
-          parsedDiamonds.push({ shape, carat, quantity: qty, rate, price });
+
+          parsedDiamonds.push({ shape, carat, quantity: qty, rate, markupPercent, price });
         }
       } else {
         diamondParsingError = true;

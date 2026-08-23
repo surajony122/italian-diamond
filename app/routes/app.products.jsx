@@ -171,7 +171,12 @@ export const action = async ({ request }) => {
     const diamondInfoText = variantNode.product.diamondInfo1?.value || variantNode.product.diamondInfo2?.value || "";
     let finalDiamondPrice = 0;
     
-    const parserResult = parseDiamondText(diamondInfoText, appSettings.diamondBasePrice || 26000);
+    const parserResult = parseDiamondText(
+      diamondInfoText,
+      appSettings.diamondBasePrice || 26000,
+      appSettings.shapeMarkups || {},
+      appSettings.defaultShapeMarkupPercent ?? 25
+    );
     if (parserResult.parsedDiamonds.length > 0 && !parserResult.diamondParsingError) {
       finalDiamondPrice = parserResult.calculatedDiamondPrice;
     }

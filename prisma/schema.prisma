@@ -42,6 +42,12 @@ model AppSettings {
   goldApiMode         String   @default("manual") // "manual" or "auto"
   goldApiKey          String?
   diamondBasePrice    Float    @default(26000.0)
+  // Per-shape diamond markup, as a percentage on top of diamondBasePrice. Keys are
+  // lowercased shape names as they appear in the product description (e.g. "round",
+  // "emerald", "pear"). A shape not present here falls back to defaultShapeMarkupPercent.
+  // Default seeds Round/Emerald at 0% to match the original hardcoded behavior.
+  shapeMarkups              Json     @default("{\"round\": 0, \"emerald\": 0}")
+  defaultShapeMarkupPercent Float    @default(25.0)
   lastSyncTime        DateTime?
 }
 
