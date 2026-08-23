@@ -3,7 +3,7 @@ import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { Page, Layout, Card, BlockStack, InlineStack, Text, Button, Select, TextField, Banner, Badge, ProgressBar, DataTable, Link, Box, Icon } from "@shopify/polaris";
-import { RefreshIcon, CashDollarIcon, SaveIcon, ShieldCheckMarkIcon } from "@shopify/polaris-icons";
+import { RefreshIcon, CashDollarIcon, SaveIcon, ShieldCheckMarkIcon, ClockIcon, ChartVerticalIcon } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { fetchLiveGoldRate } from "../services/goldApi";
@@ -22,7 +22,35 @@ export const loader = async ({ request }) => {
     });
   }
 
-  return { settings };
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const [totalSyncs, syncsLast7Days, dailyRows] = await Promise.all([
+    prisma.auditLog.count({ where: { shop: session.shop } }),
+    prisma.auditLog.count({ where: { shop: session.shop, createdAt: { gt: sevenDaysAgo } } }),
+    prisma.$queryRaw`
+      SELECT date_trunc('day', "createdAt") as day, count(*)::int as count
+      FROM "AuditLog"
+      WHERE shop = ${session.shop} AND "createdAt" > now() - interval '14 days'
+      GROUP BY day ORDER BY day
+    `,
+  ]);
+
+  // Zero-fill the last 14 days so the chart always has a full, evenly-spaced axis
+  // instead of only showing whichever days happened to have activity.
+  const countsByDay = new Map(
+    dailyRows.map(r => [new Date(r.day).toISOString().slice(0, 10), r.count])
+  );
+  const dailyActivity = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    dailyActivity.push({
+      label: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+      count: countsByDay.get(key) || 0,
+    });
+  }
+
+  return { settings, totalSyncs, syncsLast7Days, dailyActivity };
 };
 
 export const action = async ({ request }) => {
@@ -112,8 +140,70 @@ export const action = async ({ request }) => {
   return null;
 };
 
+// Small dependency-free bar chart (inline SVG) - deliberately not pulling in a charting
+// library for one chart; keeps this SSR-safe with zero added risk of breakage.
+function ActivityBarChart({ data }) {
+  const width = 700;
+  const height = 160;
+  const barGap = 6;
+  const barWidth = (width / data.length) - barGap;
+  const max = Math.max(1, ...data.map(d => d.count));
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height + 24}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img" aria-label="Price syncs over the last 14 days">
+      {data.map((d, i) => {
+        const barHeight = (d.count / max) * height;
+        const x = i * (barWidth + barGap);
+        const y = height - barHeight;
+        return (
+          <g key={i}>
+            <rect x={x} y={y} width={barWidth} height={Math.max(barHeight, d.count > 0 ? 3 : 0)} rx="3" fill={d.count > 0 ? "#8c5a4f" : "#e1e3e5"} />
+            <text x={x + barWidth / 2} y={height + 16} textAnchor="middle" fontSize="10" fill="#637381">
+              {d.label}
+            </text>
+            {d.count > 0 && (
+              <text x={x + barWidth / 2} y={y - 4} textAnchor="middle" fontSize="10" fill="#202223">
+                {d.count}
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function StatTile({ icon, label, value, tone = "info" }) {
+  const toneBg = {
+    info: "#eaf2fb",
+    success: "#e3f5e9",
+    warning: "#fff4e4",
+    critical: "#fbeae5",
+  }[tone] || "#f1f2f3";
+  const toneColor = {
+    info: "#1f5199",
+    success: "#1a7a3d",
+    warning: "#8a5a00",
+    critical: "#8c2e1a",
+  }[tone] || "#454f5b";
+
+  return (
+    <Box background="bg-surface-secondary" padding="300" borderRadius="200" minWidth="160px">
+      <InlineStack gap="300" blockAlign="center" wrap={false}>
+        <div style={{ background: toneBg, color: toneColor, borderRadius: '8px', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <Icon source={icon} />
+        </div>
+        <BlockStack gap="0">
+          <Text as="span" variant="bodySm" tone="subdued">{label}</Text>
+          <Text as="span" variant="headingLg">{value}</Text>
+        </BlockStack>
+      </InlineStack>
+    </Box>
+  );
+}
+
 export default function Index() {
-  const { settings: initialSettings } = useLoaderData();
+  const { settings: initialSettings, totalSyncs, syncsLast7Days, dailyActivity } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
 
@@ -140,7 +230,33 @@ export default function Index() {
     <Page title="Gold Price Sync Dashboard" fullWidth>
       {isLoading && <div style={{marginBottom: '16px'}}><ProgressBar progress={100} size="small" tone="primary" /></div>}
       <Layout>
-        
+
+        {/* At-a-glance activity */}
+        <Layout.Section>
+          <InlineStack gap="300" wrap>
+            <StatTile icon={CashDollarIcon} label="Total Price Syncs" value={totalSyncs.toLocaleString()} tone="info" />
+            <StatTile icon={RefreshIcon} label="Syncs (Last 7 Days)" value={syncsLast7Days.toLocaleString()} tone="success" />
+            <StatTile
+              icon={ClockIcon}
+              label="Last Sync"
+              value={settings.lastSyncTime ? new Date(settings.lastSyncTime).toLocaleDateString() : "Never"}
+              tone={settings.lastSyncTime ? "success" : "warning"}
+            />
+          </InlineStack>
+        </Layout.Section>
+
+        <Layout.Section>
+          <Card padding="400">
+            <BlockStack gap="300">
+              <InlineStack gap="150" blockAlign="center">
+                <Icon source={ChartVerticalIcon} tone="subdued" />
+                <Text variant="headingMd" as="h2">Price Syncs - Last 14 Days</Text>
+              </InlineStack>
+              <ActivityBarChart data={dailyActivity} />
+            </BlockStack>
+          </Card>
+        </Layout.Section>
+
         {/* Dashboard Status */}
         <Layout.Section>
           <Card padding="400">
