@@ -24,7 +24,7 @@ import {
   Tooltip,
   List,
 } from "@shopify/polaris";
-import { ChevronDownIcon, ChevronUpIcon, ExportIcon, ImportIcon, InfoIcon } from '@shopify/polaris-icons';
+import { ChevronDownIcon, ChevronUpIcon, ExportIcon, ImportIcon, InfoIcon, CashDollarIcon } from '@shopify/polaris-icons';
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { calculateFinalPrice, parseDiamondText } from "../services/pricing";
@@ -523,6 +523,7 @@ export default function Products() {
       fullWidth
       primaryAction={{
         content: 'Sync All Prices',
+        icon: CashDollarIcon,
         onAction: runSystemCheck,
         loading: fetcher.state !== "idle"
       }}

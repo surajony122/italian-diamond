@@ -15,7 +15,7 @@ import {
   Banner,
   Checkbox,
 } from "@shopify/polaris";
-import { DeleteIcon, PlusIcon } from "@shopify/polaris-icons";
+import { DeleteIcon, PlusIcon, SaveIcon } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
@@ -319,7 +319,7 @@ export default function PricingRules() {
             </Card>
 
             <InlineStack>
-              <Button variant="primary" onClick={handleSave} loading={isLoading}>
+              <Button variant="primary" icon={SaveIcon} onClick={handleSave} loading={isLoading}>
                 Save Pricing Rules
               </Button>
             </InlineStack>

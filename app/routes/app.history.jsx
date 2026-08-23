@@ -5,7 +5,10 @@ import {
   DataTable,
   Text,
   Badge,
+  BlockStack,
+  Icon,
 } from "@shopify/polaris";
+import { ClockIcon } from "@shopify/polaris-icons";
 import { useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
@@ -56,8 +59,11 @@ export default function HistoryPage() {
               <Text variant="bodySm" tone="subdued">Showing the last 100 price updates</Text>
             </div>
             {logs.length === 0 ? (
-              <div style={{ padding: "20px", textAlign: "center" }}>
-                <Text variant="bodyMd">No audit logs found yet. Save a variant or run a sync to generate logs.</Text>
+              <div style={{ padding: "40px 20px", textAlign: "center" }}>
+                <BlockStack gap="200" inlineAlign="center">
+                  <Icon source={ClockIcon} tone="subdued" />
+                  <Text variant="bodyMd" tone="subdued">No audit logs found yet. Save a variant or run a sync to generate logs.</Text>
+                </BlockStack>
               </div>
             ) : (
               <DataTable

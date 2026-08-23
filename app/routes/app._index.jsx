@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { Page, Layout, Card, BlockStack, InlineStack, Text, Button, Select, TextField, Banner, Badge, ProgressBar, DataTable, Link } from "@shopify/polaris";
+import { Page, Layout, Card, BlockStack, InlineStack, Text, Button, Select, TextField, Banner, Badge, ProgressBar, DataTable, Link, Box, Icon } from "@shopify/polaris";
+import { RefreshIcon, CashDollarIcon, SaveIcon, ShieldCheckMarkIcon } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { fetchLiveGoldRate } from "../services/goldApi";
@@ -152,11 +153,38 @@ export default function Index() {
                   <Badge tone="info">Manual Mode</Badge>
                 )}
               </InlineStack>
-              <BlockStack gap="200">
-                <Text as="p"><strong>Current Gold Rate:</strong> ₹{settings.goldRate} / gm</Text>
-                <Text as="p"><strong>Making Charges:</strong> ₹{settings.makingChargePerGram} / gm</Text>
-                <Text as="p"><strong>GST:</strong> {settings.gstPercentage}%</Text>
-                <Text as="p"><strong>Diamond Base Price:</strong> ₹{settings.diamondBasePrice}/ct</Text>
+              <InlineStack gap="300" wrap>
+                <Box background="bg-surface-secondary" padding="300" borderRadius="200" minWidth="140px">
+                  <BlockStack gap="050">
+                    <Text as="span" variant="bodySm" tone="subdued">Gold Rate</Text>
+                    <Text as="span" variant="headingLg">₹{settings.goldRate}</Text>
+                    <Text as="span" variant="bodySm" tone="subdued">per gram</Text>
+                  </BlockStack>
+                </Box>
+                <Box background="bg-surface-secondary" padding="300" borderRadius="200" minWidth="140px">
+                  <BlockStack gap="050">
+                    <Text as="span" variant="bodySm" tone="subdued">Making Charges</Text>
+                    <Text as="span" variant="headingLg">₹{settings.makingChargePerGram}</Text>
+                    <Text as="span" variant="bodySm" tone="subdued">per gram</Text>
+                  </BlockStack>
+                </Box>
+                <Box background="bg-surface-secondary" padding="300" borderRadius="200" minWidth="140px">
+                  <BlockStack gap="050">
+                    <Text as="span" variant="bodySm" tone="subdued">Diamond Base</Text>
+                    <Text as="span" variant="headingLg">₹{settings.diamondBasePrice}</Text>
+                    <Text as="span" variant="bodySm" tone="subdued">per carat</Text>
+                  </BlockStack>
+                </Box>
+                <Box background="bg-surface-secondary" padding="300" borderRadius="200" minWidth="140px">
+                  <BlockStack gap="050">
+                    <Text as="span" variant="bodySm" tone="subdued">GST</Text>
+                    <Text as="span" variant="headingLg">{settings.gstPercentage}%</Text>
+                    <Text as="span" variant="bodySm" tone="subdued">&nbsp;</Text>
+                  </BlockStack>
+                </Box>
+              </InlineStack>
+
+              <BlockStack gap="100">
                 <Text as="p" tone="subdued">
                   Manage making charges, GST, and diamond pricing (including per-shape markup) on the{" "}
                   <Link url="/app/pricing">Pricing Rules</Link> page.
@@ -184,14 +212,16 @@ export default function Index() {
               )}
               
               <InlineStack gap="300">
-                <Button 
-                  variant="primary" 
+                <Button
+                  variant="primary"
+                  icon={CashDollarIcon}
                   onClick={() => fetcher.submit({ intent: "sync_prices" }, { method: "POST" })}
                   loading={isLoading && fetcher.formData?.get("intent") === "sync_prices"}
                 >
                   Update All Prices
                 </Button>
-                <Button 
+                <Button
+                  icon={RefreshIcon}
                   onClick={() => fetcher.submit({ intent: "fetch_rate" }, { method: "POST" })}
                   loading={isLoading && fetcher.formData?.get("intent") === "fetch_rate"}
                 >
@@ -206,7 +236,10 @@ export default function Index() {
         <Layout.Section>
           <Card padding="400" background="bg-surface-critical">
             <BlockStack gap="400">
-              <Text variant="headingMd" as="h2" tone="critical">Data Safety</Text>
+              <InlineStack gap="150" blockAlign="center">
+                <Icon source={ShieldCheckMarkIcon} tone="critical" />
+                <Text variant="headingMd" as="h2" tone="critical">Data Safety</Text>
+              </InlineStack>
 
               <Text as="p">
                 <strong>Restore Original Prices:</strong> Every sync (manual, bulk, or nightly) automatically backs up each variant's pre-sync price into <code>custom.original_price</code> before ever changing it. Click this to restore every variant's price from that guaranteed backup and clear its "Compare at" price — the safe way to stop dynamic pricing.
@@ -279,7 +312,7 @@ export default function Index() {
                 </Text>
 
                 <div style={{marginTop: '10px'}}>
-                  <Button submit variant="primary" loading={isLoading && fetcher.formData?.get("intent") === "save_settings"}>
+                  <Button submit variant="primary" icon={SaveIcon} loading={isLoading && fetcher.formData?.get("intent") === "save_settings"}>
                     Save Settings
                   </Button>
                 </div>

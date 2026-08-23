@@ -8,16 +8,18 @@ import {
   DataTable,
   Badge,
   Banner,
-  InlineStack
+  InlineStack,
+  Box,
+  Divider
 } from "@shopify/polaris";
 import { useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 
 export const loader = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
-  
-  const appSettings = await prisma.appSettings.findFirst();
+  const { admin, session } = await authenticate.admin(request);
+
+  const appSettings = await prisma.appSettings.findUnique({ where: { shop: session.shop } });
   
   const response = await admin.graphql(`
     query getProducts {
@@ -134,9 +136,11 @@ export default function InfoPage() {
               </BlockStack>
             </Card>
           </BlockStack>
-          
-          <br /><br />
-          
+
+          <Box paddingBlockStart="600" paddingBlockEnd="600">
+            <Divider />
+          </Box>
+
           <BlockStack gap="400">
             <Text variant="headingLg" as="h2">How it Works (Documentation)</Text>
             <Card>
