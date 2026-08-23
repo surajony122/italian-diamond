@@ -22,7 +22,6 @@ import {
   DropZone,
   ProgressBar,
   Tooltip,
-  List,
 } from "@shopify/polaris";
 import { ChevronDownIcon, ChevronUpIcon, ExportIcon, ImportIcon, InfoIcon, CashDollarIcon } from '@shopify/polaris-icons';
 import { authenticate } from "../shopify.server";
@@ -331,6 +330,36 @@ export default function Products() {
   const [isSystemCheckModalOpen, setIsSystemCheckModalOpen] = useState(false);
   const [systemCheckResults, setSystemCheckResults] = useState(null);
 
+  // Shared export logic - used by the toolbar "Export to CSV" button (respects the
+  // current selection) and the System Check modal's per-issue export links (always a
+  // full-catalog scan for that issue, regardless of what's selected/on-screen, since
+  // this page only ever loads the first 50 matching products).
+  const handleExport = async ({ useSelection = false, issue = null } = {}) => {
+    try {
+      setIsExporting(true);
+      let url = '/api/export';
+      const params = new URLSearchParams();
+      if (useSelection && selectedVariants.length > 0) {
+        params.set('variantIds', JSON.stringify(selectedVariants));
+      }
+      if (issue) params.set('issue', issue);
+      if ([...params].length > 0) url += `?${params.toString()}`;
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(text || 'Export failed');
+      }
+      const blob = await res.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      setExportUrl(objectUrl);
+    } catch (err) {
+      shopify.toast.show(err.message, { isError: true });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const runSystemCheck = () => {
     const missingWeights = products.reduce((count, p) => count + p.variants.filter(v => !v.goldWeight || parseFloat(v.goldWeight) === 0).length, 0);
     const missingBackups = products.reduce((count, p) => count + p.variants.filter(v => !v.originalPrice?.value).length, 0);
@@ -541,24 +570,7 @@ export default function Products() {
           content: 'Export to CSV',
           icon: ExportIcon,
           loading: isExporting,
-          onAction: async () => {
-            try {
-              setIsExporting(true);
-              let url = '/api/export';
-              if (selectedVariants.length > 0) {
-                url += `?variantIds=${encodeURIComponent(JSON.stringify(selectedVariants))}`;
-              }
-              const res = await fetch(url);
-              if (!res.ok) throw new Error('Export failed');
-              const blob = await res.blob();
-              const objectUrl = window.URL.createObjectURL(blob);
-              setExportUrl(objectUrl);
-            } catch (err) {
-              shopify.toast.show(err.message, { isError: true });
-            } finally {
-              setIsExporting(false);
-            }
-          },
+          onAction: () => handleExport({ useSelection: true }),
         }
       ]}
     >
@@ -676,25 +688,51 @@ export default function Products() {
               ) : (
                 <Text as="p" tone="critical">⚠️ Warning: The system check found potential issues. Syncing now may result in incomplete data.</Text>
               )}
-              
-              <List type="bullet">
-                <List.Item>
-                  <Text as="span" fontWeight="bold">Missing Gold Weights: </Text>
-                  {systemCheckResults.missingWeights > 0 ? (
-                    <Text as="span" tone="critical">{systemCheckResults.missingWeights} variants</Text>
-                  ) : (
-                    <Text as="span" tone="success">0 variants</Text>
-                  )}
-                </List.Item>
-                <List.Item>
-                  <Text as="span" fontWeight="bold">Missing Original Price Backups: </Text>
-                  {systemCheckResults.missingBackups > 0 ? (
-                    <Text as="span" tone="critical">{systemCheckResults.missingBackups} variants</Text>
-                  ) : (
-                    <Text as="span" tone="success">0 variants</Text>
-                  )}
-                </List.Item>
-              </List>
+
+              <Text as="p" tone="subdued" variant="bodySm">
+                These counts are from the current page's loaded products only. Use "Export list" for a complete,
+                full-catalog CSV of the actual issue - it may find more than what's shown here.
+              </Text>
+
+              <BlockStack gap="200">
+                <InlineStack align="space-between" blockAlign="center">
+                  <InlineStack gap="150">
+                    <Text as="span" fontWeight="bold">Missing Gold Weights: </Text>
+                    {systemCheckResults.missingWeights > 0 ? (
+                      <Text as="span" tone="critical">{systemCheckResults.missingWeights} variants (this page)</Text>
+                    ) : (
+                      <Text as="span" tone="success">0 variants (this page)</Text>
+                    )}
+                  </InlineStack>
+                  <Button
+                    size="micro"
+                    icon={ExportIcon}
+                    loading={isExporting}
+                    onClick={() => handleExport({ issue: "missing_weight" })}
+                  >
+                    Export list
+                  </Button>
+                </InlineStack>
+
+                <InlineStack align="space-between" blockAlign="center">
+                  <InlineStack gap="150">
+                    <Text as="span" fontWeight="bold">Missing Original Price Backups: </Text>
+                    {systemCheckResults.missingBackups > 0 ? (
+                      <Text as="span" tone="critical">{systemCheckResults.missingBackups} variants (this page)</Text>
+                    ) : (
+                      <Text as="span" tone="success">0 variants (this page)</Text>
+                    )}
+                  </InlineStack>
+                  <Button
+                    size="micro"
+                    icon={ExportIcon}
+                    loading={isExporting}
+                    onClick={() => handleExport({ issue: "missing_backup" })}
+                  >
+                    Export list
+                  </Button>
+                </InlineStack>
+              </BlockStack>
             </BlockStack>
           )}
         </Modal.Section>

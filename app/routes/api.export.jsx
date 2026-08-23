@@ -12,6 +12,11 @@ export const loader = async ({ request }) => {
       targetVariantIds = JSON.parse(variantIdsParam);
     } catch(e) {}
   }
+
+  // "missing_weight" | "missing_backup" | null. Only applies to the full-catalog scan
+  // below (not a specific variantIds export) - this is how "export products with
+  // issues" works without being capped at the Products page's 50-product view.
+  const issueFilter = url.searchParams.get("issue");
   
   let hasNextPage = true;
   let cursor = null;
@@ -45,6 +50,7 @@ export const loader = async ({ request }) => {
                   }
                   goldWeight: metafield(namespace: "custom", key: "gold_weight") { value }
                   diamondPrice: metafield(namespace: "custom", key: "diamond_price") { value }
+                  originalPrice: metafield(namespace: "custom", key: "original_price") { value }
                 }
               }
             }
@@ -185,7 +191,16 @@ export const loader = async ({ request }) => {
           let isFirstVariant = true;
           for (const vEdge of product.variants.edges) {
             const variant = vEdge.node;
-            
+
+            const hasGoldWeight = variant.goldWeight?.value && parseFloat(variant.goldWeight.value) > 0;
+            const hasOriginalPrice = !!variant.originalPrice?.value;
+
+            // Don't touch isFirstVariant here - it tracks the first variant we actually
+            // INCLUDE in the output, so Title/Vendor/Status still land on the right row
+            // when earlier variants of this product get filtered out.
+            if (issueFilter === "missing_weight" && hasGoldWeight) continue;
+            if (issueFilter === "missing_backup" && hasOriginalPrice) continue;
+
             const opt1 = variant.selectedOptions[0] || { name: "", value: "" };
             const opt2 = variant.selectedOptions[1] || { name: "", value: "" };
             const opt3 = variant.selectedOptions[2] || { name: "", value: "" };
@@ -254,7 +269,8 @@ export const loader = async ({ request }) => {
     }
 
     if (allVariants.length === 0) {
-      return new Response("No products found", { status: 404 });
+      const message = issueFilter ? "No variants match that issue - nothing to export" : "No products found";
+      return new Response(message, { status: 404 });
     }
 
     // Convert array of objects to CSV string
