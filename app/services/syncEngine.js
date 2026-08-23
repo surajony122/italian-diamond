@@ -91,6 +91,20 @@ const GET_VARIANTS_FOR_SYNC_QUERY = `
 export async function syncVariantPage(admin, appSettings, { cursor = null, pageSize = 25, shop, reason = "Bulk Sync" } = {}) {
   const response = await admin.graphql(GET_VARIANTS_FOR_SYNC_QUERY, { variables: { cursor, pageSize } });
   const data = await response.json();
+
+  // Defensive check: a query that costs more than Shopify's per-request cap gets
+  // rejected outright (data: null, a top-level error) rather than throttled - previously
+  // unhandled, so this would have thrown a confusing "Cannot read properties of null"
+  // instead of a clear, actionable message pointing at the actual cause.
+  if (!data.data?.productVariants) {
+    const isCostError = data.errors?.some(e => /cost/i.test(e.message || ""));
+    throw new Error(
+      isCostError
+        ? `Sync page query (pageSize ${pageSize}) exceeded Shopify's per-request cost limit - try a smaller pageSize.`
+        : `Sync page query failed: ${JSON.stringify(data.errors || data)}`
+    );
+  }
+
   const variants = data.data.productVariants.edges;
 
   let variantsToUpdate = [];

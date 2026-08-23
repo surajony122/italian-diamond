@@ -13,9 +13,15 @@ export const action = async ({ request }) => {
       return new Response(JSON.stringify({ success: false, error: "Settings not found" }), { status: 400, headers: { "Content-Type": "application/json" } });
     }
 
+    // 25 was very conservative and meant 1,676+ sequential page requests on a large
+    // catalog (confirmed: this store has ~41,906 variants). 250 is Shopify's hard cap
+    // for `first` on this connection (confirmed directly against this store: costs
+    // only ~101 of the 2000-point budget per page, and pageSize 500 is flatly
+    // rejected by Shopify itself with "first cannot exceed 250") - cuts total requests
+    // by ~10x with real evidence it's safe, not just an educated guess.
     const result = await syncVariantPage(admin, appSettings, {
       cursor,
-      pageSize: 25,
+      pageSize: 250,
       shop: session.shop,
       reason: "Bulk API Chunk"
     });
