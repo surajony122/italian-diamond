@@ -47,7 +47,7 @@ export default function HistoryPage() {
   ]);
 
   return (
-    <Page title="Audit History">
+    <Page title="Audit History" fullWidth>
       <Layout>
         <Layout.Section>
           <Card padding="0">

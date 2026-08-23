@@ -535,7 +535,7 @@ export default function Products() {
 
   if (navigation.state === "loading" && navigation.location.pathname === "/app/products") {
     return (
-      <SkeletonPage primaryAction>
+      <SkeletonPage primaryAction fullWidth>
         <Layout>
           <Layout.Section>
             <Card>
@@ -557,8 +557,9 @@ export default function Products() {
   };
 
   return (
-    <Page 
+    <Page
       title="Products & Bulk Editor"
+      fullWidth
       primaryAction={{
         content: 'Sync All Prices',
         onAction: runSystemCheck,

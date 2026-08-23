@@ -69,7 +69,7 @@ export default function InfoPage() {
   });
 
   return (
-    <Page title="Diagnostics & Documentation">
+    <Page title="Diagnostics & Documentation" fullWidth>
       <Layout>
         <Layout.Section>
           

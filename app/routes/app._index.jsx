@@ -152,7 +152,7 @@ export default function Index() {
   }, [settings.goldApiKey, settings.goldRate, settings.makingChargePerGram, settings.gstPercentage, settings.goldApiMode, settings.diamondBasePrice]);
 
   return (
-    <Page title="Gold Price Sync Dashboard">
+    <Page title="Gold Price Sync Dashboard" fullWidth>
       {isLoading && <div style={{marginBottom: '16px'}}><ProgressBar progress={100} size="small" tone="primary" /></div>}
       <Layout>
         
