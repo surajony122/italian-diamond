@@ -15,7 +15,12 @@ const shopify = shopifyApp({
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
-  distribution: AppDistribution.AppStore,
+  // This app is privately installed via Custom Distribution, not listed on the
+  // Shopify App Store - AppDistribution.AppStore was the template default and
+  // doesn't match, which changes how the library redirects/validates the OAuth
+  // install flow (see redirect-to-install-page.js) and can break first-install
+  // on a store that has never had this app before.
+  distribution: AppDistribution.SingleMerchant,
   future: {
     expiringOfflineAccessTokens: true,
   },
