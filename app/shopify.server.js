@@ -21,8 +21,14 @@ const shopify = shopifyApp({
   // install flow (see redirect-to-install-page.js) and can break first-install
   // on a store that has never had this app before.
   distribution: AppDistribution.SingleMerchant,
+  // expiringOfflineAccessTokens was on (template default) but nothing in this app ever
+  // implements the refresh-token exchange it requires - so once the offline token
+  // expired (~24h), every background/server-side API call started failing with
+  // "Invalid API key or access token" (confirmed directly against the live store).
+  // Off = Shopify's classic non-expiring offline token, matching what the rest of this
+  // app (cron sync, background jobs) already assumes.
   future: {
-    expiringOfflineAccessTokens: true,
+    expiringOfflineAccessTokens: false,
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
