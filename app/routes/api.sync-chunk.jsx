@@ -31,6 +31,7 @@ export const action = async ({ request }) => {
       return new Response(JSON.stringify({
         success: true,
         variantsProcessed: result.variantsProcessed,
+        syncedCount: result.syncedCount,
         productIds: result.productIds,
       }), { headers: { "Content-Type": "application/json" } });
     }
@@ -68,6 +69,7 @@ export const action = async ({ request }) => {
       hasNextPage: result.hasNextPage,
       nextCursor: result.nextCursor,
       variantsProcessed: result.variantsProcessed,
+      syncedCount: result.syncedCount,
       productIds: result.productIds,
       totalProducts
     }), { headers: { "Content-Type": "application/json" } });

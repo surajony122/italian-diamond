@@ -22,12 +22,56 @@ import {
   DropZone,
   ProgressBar,
   Tooltip,
+  Banner,
 } from "@shopify/polaris";
 import { ChevronDownIcon, ChevronUpIcon, ExportIcon, ImportIcon, InfoIcon, CashDollarIcon } from '@shopify/polaris-icons';
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { calculateFinalPrice, parseDiamondText } from "../services/pricing";
 import { runBulkSync, syncSingleProduct } from "../services/syncEngine";
+const GET_PRODUCTS_LIST_QUERY = `
+  query getProducts($queryStr: String) {
+    products(first: 50, query: $queryStr) {
+      edges {
+        node {
+          id
+          title
+          status
+          variants(first: 50) {
+            edges {
+              node {
+                id
+                title
+                price
+                sku
+                inventoryItem {
+                  measurement {
+                    weight {
+                      value
+                    }
+                  }
+                }
+                goldWeight: metafield(namespace: "custom", key: "gold_weight") {
+                  value
+                }
+                diamondPrice: metafield(namespace: "custom", key: "diamond_price") {
+                  value
+                }
+                originalPrice: metafield(namespace: "custom", key: "original_price") {
+                  value
+                }
+                priceBreakdown: metafield(namespace: "custom", key: "price_breakdown") {
+                  value
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
   const url = new URL(request.url);
@@ -39,53 +83,38 @@ export const loader = async ({ request }) => {
   if (status !== "ALL" && status !== "NEEDS_WEIGHT") searchQuery.push(`status:${status}`);
   const queryStr = searchQuery.length > 0 ? searchQuery.join(" AND ") : "";
 
-  const response = await admin.graphql(`
-    query getProducts($queryStr: String) {
-      products(first: 50, query: $queryStr) {
-        edges {
-          node {
-            id
-            title
-            status
-            variants(first: 50) {
-              edges {
-                node {
-                  id
-                  title
-                  price
-                  sku
-                  inventoryItem {
-                    measurement {
-                      weight {
-                        value
-                      }
-                    }
-                  }
-                  goldWeight: metafield(namespace: "custom", key: "gold_weight") {
-                    value
-                  }
-                  diamondPrice: metafield(namespace: "custom", key: "diamond_price") {
-                    value
-                  }
-                  originalPrice: metafield(namespace: "custom", key: "original_price") {
-                    value
-                  }
-                  priceBreakdown: metafield(namespace: "custom", key: "price_breakdown") {
-                    value
-                  }
-                }
-              }
-            }
-          }
+  // This page's own query has no error handling at all previously - a GraphQL-level
+  // failure (e.g. rate-limited right after a heavy sync just finished hammering the
+  // API, which is exactly the sequence that surfaced this) crashed the whole page with
+  // an unrecoverable "Application Error" instead of a retry or a graceful message.
+  let data = null;
+  let loadError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await admin.graphql(GET_PRODUCTS_LIST_QUERY, { variables: { queryStr: queryStr || null } });
+      const json = await response.json();
+      if (json.errors) {
+        const isThrottled = json.errors.some(e => e.extensions?.code === "THROTTLED");
+        if (isThrottled && attempt < 3) {
+          await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+          continue;
         }
+        throw new Error(JSON.stringify(json.errors));
       }
+      data = json.data;
+      break;
+    } catch (e) {
+      loadError = e.message;
+      if (attempt >= 3) break;
+      await new Promise(resolve => setTimeout(resolve, 500 * attempt));
     }
-  `, {
-    variables: { queryStr: queryStr || null }
-  });
+  }
 
-  const { data } = await response.json();
-  
+  if (!data) {
+    console.error("Products page load failed after retries:", loadError);
+    return { products: [], q, status, collections: [], loadError: "Failed to load products - this can happen right after a large sync while Shopify's API is still catching up. Try refreshing in a moment." };
+  }
+
   const products = data.products.edges.map(productEdge => {
     const product = productEdge.node;
     return {
@@ -127,7 +156,7 @@ export const loader = async ({ request }) => {
     console.error("Failed to load collections for sync scope picker:", e);
   }
 
-  return { products: finalProducts, q, status, collections };
+  return { products: finalProducts, q, status, collections, loadError: null };
 };
 
 export const action = async ({ request }) => {
@@ -330,7 +359,7 @@ function HeaderWithTooltip({ label, help }) {
 }
 
 export default function Products() {
-  const { products, q, status, collections } = useLoaderData();
+  const { products, q, status, collections, loadError } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
   const submit = useSubmit();
@@ -359,6 +388,8 @@ export default function Products() {
     processedProducts: 0,
     totalProducts: null,   // null until the first response tells us (real total, not a guess)
     variantsProcessed: 0,
+    syncedCount: 0,        // variants actually re-priced, vs. variantsProcessed (scanned - includes skips)
+    isUnsyncedScope: false,
   });
   
   // System Check State
@@ -403,10 +434,12 @@ export default function Products() {
   };
   
   const startProgressTask = async (endpoint, title, extraParams = {}) => {
-    setProgressModal({ open: true, title, processedProducts: 0, totalProducts: null, variantsProcessed: 0 });
+    const isUnsyncedScope = extraParams.onlyUnsynced === "true";
+    setProgressModal({ open: true, title, processedProducts: 0, totalProducts: null, variantsProcessed: 0, syncedCount: 0, isUnsyncedScope });
     let hasNextPage = true;
     let cursor = null;
     let variantsProcessed = 0;
+    let syncedCount = 0;
     let totalProducts = null;
     const seenProductIds = new Set(); // dedupes across pages so a product isn't double-counted
 
@@ -427,6 +460,7 @@ export default function Products() {
         if (!data.success) throw new Error(data.error || "Task failed");
 
         variantsProcessed += data.variantsProcessed;
+        syncedCount += data.syncedCount || 0;
         if (data.totalProducts != null) totalProducts = data.totalProducts;
         if (Array.isArray(data.productIds)) {
           for (const id of data.productIds) seenProductIds.add(id);
@@ -438,12 +472,18 @@ export default function Products() {
           processedProducts: seenProductIds.size,
           totalProducts,
           variantsProcessed,
+          syncedCount,
+          isUnsyncedScope,
         });
 
         hasNextPage = data.hasNextPage;
         cursor = data.nextCursor;
       }
-      shopify.toast.show(`${title} completed successfully!`);
+      shopify.toast.show(
+        isUnsyncedScope
+          ? `${title} completed - ${syncedCount} variant(s) newly synced.`
+          : `${title} completed successfully!`
+      );
     } catch (e) {
       shopify.toast.show(`Error: ${e.message}`, { isError: true });
     } finally {
@@ -720,9 +760,15 @@ export default function Products() {
                   tone="primary"
                 />
                 <Text as="p" alignment="center">
-                  {progressModal.processedProducts} / {progressModal.totalProducts} products
+                  {progressModal.processedProducts} / {progressModal.totalProducts} products scanned
                   {" "}({Math.round((progressModal.processedProducts / progressModal.totalProducts) * 100)}%)
                 </Text>
+                {progressModal.isUnsyncedScope && (
+                  <Text as="p" alignment="center" tone="subdued">
+                    {progressModal.syncedCount} newly synced so far - the total above is your whole catalog being
+                    scanned, not how many still need syncing (already-synced products are skipped quickly).
+                  </Text>
+                )}
               </>
             ) : (
               <>
@@ -840,8 +886,20 @@ export default function Products() {
       </Modal>
       
       <Layout>
+        {loadError && (
+          <Layout.Section>
+            <Banner tone="critical" title="Couldn't load products">
+              <BlockStack gap="200">
+                <Text as="p">{loadError}</Text>
+                <InlineStack>
+                  <Button onClick={() => submit({ q: queryValue, status: statusValue })}>Retry</Button>
+                </InlineStack>
+              </BlockStack>
+            </Banner>
+          </Layout.Section>
+        )}
         <Layout.Section>
-          
+
           <Card padding="0">
             <div style={{padding: '16px'}}>
               <Filters
