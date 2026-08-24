@@ -478,6 +478,13 @@ export default function Products() {
 
         hasNextPage = data.hasNextPage;
         cursor = data.nextCursor;
+
+        // A small pause between pages so this doesn't hammer Shopify's rate-limit
+        // bucket back-to-back for many minutes straight (confirmed from production
+        // logs: sustained load like that outran the bucket's refill rate and caused
+        // Throttled errors even after retries). Cheap insurance, barely affects total
+        // time given each page itself already takes a couple seconds.
+        if (hasNextPage) await new Promise(resolve => setTimeout(resolve, 300));
       }
       shopify.toast.show(
         isUnsyncedScope
@@ -497,20 +504,29 @@ export default function Products() {
   // store), so this resolves the scope to a concrete product ID list ONCE up front,
   // then syncs it in batches - a different continuation model than the cursor-based
   // startProgressTask above (there's no Shopify cursor here, just "which IDs are left").
-  const startScopedSync = async (title, { statusFilter = null, collectionId = null } = {}) => {
+  const startScopedSync = async (title, { statusFilter = null, collectionId = null, preResolvedIds = null } = {}) => {
     setProgressModal({ open: true, title, processedProducts: 0, totalProducts: null, variantsProcessed: 0 });
     try {
-      const resolveFormData = new FormData();
-      if (statusFilter) resolveFormData.append("statusFilter", statusFilter);
-      if (collectionId) resolveFormData.append("collectionId", collectionId);
+      let allProductIds, totalProducts;
 
-      const resolveRes = await fetch("/api/resolve-sync-scope", { method: "POST", body: resolveFormData });
-      if (!resolveRes.ok) throw new Error("Failed to resolve sync scope");
-      const resolveData = await resolveRes.json();
-      if (!resolveData.success) throw new Error(resolveData.error || "Failed to resolve sync scope");
+      if (preResolvedIds) {
+        // Caller already knows exactly which products to sync (e.g. "sync what's
+        // currently filtered on screen") - no need to resolve anything server-side.
+        allProductIds = preResolvedIds;
+        totalProducts = preResolvedIds.length;
+      } else {
+        const resolveFormData = new FormData();
+        if (statusFilter) resolveFormData.append("statusFilter", statusFilter);
+        if (collectionId) resolveFormData.append("collectionId", collectionId);
 
-      const allProductIds = resolveData.productIds;
-      const totalProducts = resolveData.totalProducts;
+        const resolveRes = await fetch("/api/resolve-sync-scope", { method: "POST", body: resolveFormData });
+        if (!resolveRes.ok) throw new Error("Failed to resolve sync scope");
+        const resolveData = await resolveRes.json();
+        if (!resolveData.success) throw new Error(resolveData.error || "Failed to resolve sync scope");
+
+        allProductIds = resolveData.productIds;
+        totalProducts = resolveData.totalProducts;
+      }
 
       if (totalProducts === 0) {
         shopify.toast.show("No products match this scope - nothing to sync.");
@@ -535,6 +551,10 @@ export default function Products() {
         for (const id of batch) seenProductIds.add(id); // count the whole batch as "reached", not just ones with price changes
 
         setProgressModal({ open: true, title, processedProducts: seenProductIds.size, totalProducts, variantsProcessed });
+
+        // Same pacing as the cursor-based loop - avoid hammering Shopify's rate-limit
+        // bucket with back-to-back batches for an extended run.
+        if (i + BATCH_SIZE < allProductIds.length) await new Promise(resolve => setTimeout(resolve, 300));
       }
 
       shopify.toast.show(`${title} completed successfully!`);
@@ -544,6 +564,21 @@ export default function Products() {
       setProgressModal(prev => ({ ...prev, open: false }));
       submit({ q: queryValue, status: statusValue });
     }
+  };
+
+  // Syncs exactly the products currently shown on screen (whatever search text/status
+  // filter is applied right now) - no server round-trip to resolve a scope, since the
+  // filtered list is already loaded client-side (this page always caps at 50 products).
+  const startFilteredSync = () => {
+    if (products.length === 0) {
+      shopify.toast.show("No products match the current filter - nothing to sync.");
+      return;
+    }
+    const ids = products.map(p => p.id.split("/").pop());
+    const label = queryValue || statusValue !== "ALL"
+      ? `Syncing Filtered Products (${products.length})`
+      : "Syncing Visible Products";
+    startScopedSync(label, { preResolvedIds: ids });
   };
 
   const handleDropZoneDrop = useCallback(
@@ -902,17 +937,28 @@ export default function Products() {
 
           <Card padding="0">
             <div style={{padding: '16px'}}>
-              <Filters
-                queryValue={queryValue}
-                filters={filters}
-                onQueryChange={handleFiltersQueryChange}
-                onQueryClear={() => handleFiltersQueryChange("")}
-                onClearAll={() => {
-                  setQueryValue("");
-                  setStatusValue("ALL");
-                  submit({ q: "", status: "ALL" });
-                }}
-              />
+              <InlineStack gap="300" blockAlign="start" wrap={false}>
+                <div style={{flex: 1}}>
+                  <Filters
+                    queryValue={queryValue}
+                    filters={filters}
+                    onQueryChange={handleFiltersQueryChange}
+                    onQueryClear={() => handleFiltersQueryChange("")}
+                    onClearAll={() => {
+                      setQueryValue("");
+                      setStatusValue("ALL");
+                      submit({ q: "", status: "ALL" });
+                    }}
+                  />
+                </div>
+                <Button
+                  icon={CashDollarIcon}
+                  onClick={startFilteredSync}
+                  disabled={products.length === 0}
+                >
+                  Sync Filtered ({products.length})
+                </Button>
+              </InlineStack>
             </div>
 
             {selectedVariants.length > 0 && (

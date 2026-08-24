@@ -10,42 +10,60 @@ const BULK_UPDATE_MUTATION = `
 `;
 
 /**
- * Runs productVariantsBulkUpdate for one product, with a short retry-with-backoff on
- * Shopify's rate-limit ("THROTTLED") response AND on raw network-level failures
- * ("fetch failed" / connection reset) - the latter previously unhandled at all, which
- * surfaced as a hard crash killing the whole page's sync rather than a retryable blip.
+ * Runs admin.graphql(query, variables) with retry-with-backoff, correctly distinguishing
+ * "genuinely rate-limited, needs real time to recover" from "random transient blip" -
+ * confirmed from production logs that admin.graphql() THROWS an exception whose message
+ * contains "Throttled" for the rate-limit case (not a normal response with an in-body
+ * error), so a fixed short backoff treating both cases the same way wasn't enough: under
+ * this store's sustained sync load, Shopify's bucket needs real seconds to refill, not
+ * milliseconds. Also handles the in-body THROTTLED case and raw network failures
+ * (fetch failed / connection reset), for whichever shape a given failure comes back as.
  */
-async function bulkUpdateProductVariants(admin, productId, variantsChunk, errorPrefix, { maxAttempts = 3 } = {}) {
+async function graphqlWithRetry(admin, query, variables, label, { maxAttempts = 6 } = {}) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let mutData;
+    let json;
     try {
-      const mutRes = await admin.graphql(BULK_UPDATE_MUTATION, { variables: { productId, variants: variantsChunk } });
-      mutData = await mutRes.json();
+      const res = await admin.graphql(query, { variables });
+      json = await res.json();
     } catch (e) {
-      // Network-level failure (fetch failed, connection reset, etc.) - retry rather
-      // than letting one transient blip abort the entire page's sync.
+      const isThrottled = /throttled/i.test(e.message || "");
       if (attempt < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+        // Exponential backoff with a real ceiling for genuine throttling (up to ~16s),
+        // shorter for plain network blips - a fixed 500ms*attempt was too short for
+        // Shopify's bucket to actually recover under sustained concurrent load.
+        const delay = isThrottled
+          ? Math.min(2000 * 2 ** (attempt - 1), 16000)
+          : Math.min(500 * attempt, 4000);
+        await new Promise(resolve => setTimeout(resolve, delay + Math.random() * 300));
         continue;
       }
-      throw new Error(`${errorPrefix}: network error for product ${productId} after ${maxAttempts} attempts: ${e.message}`);
+      throw new Error(`${label}: failed after ${maxAttempts} attempts: ${e.message}`);
     }
 
-    const isThrottled = mutData.errors?.some(e => e.extensions?.code === "THROTTLED");
+    const isThrottled = json.errors?.some(e => e.extensions?.code === "THROTTLED");
     if (isThrottled && attempt < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+      const delay = Math.min(2000 * 2 ** (attempt - 1), 16000);
+      await new Promise(resolve => setTimeout(resolve, delay + Math.random() * 300));
       continue;
     }
 
-    const result = mutData.data?.productVariantsBulkUpdate;
-    if (!result) {
-      throw new Error(`${errorPrefix}: no data returned for product ${productId} (${JSON.stringify(mutData.errors || mutData)})`);
-    }
-    if (result.userErrors.length > 0) {
-      console.error(`${errorPrefix.toUpperCase()} ERRORS:`, JSON.stringify(result.userErrors, null, 2));
-      throw new Error(`${errorPrefix}: ` + result.userErrors[0].message);
-    }
-    return;
+    return json;
+  }
+}
+
+/**
+ * Runs productVariantsBulkUpdate for one product via graphqlWithRetry.
+ */
+async function bulkUpdateProductVariants(admin, productId, variantsChunk, errorPrefix) {
+  const mutData = await graphqlWithRetry(admin, BULK_UPDATE_MUTATION, { productId, variants: variantsChunk }, errorPrefix);
+
+  const result = mutData.data?.productVariantsBulkUpdate;
+  if (!result) {
+    throw new Error(`${errorPrefix}: no data returned for product ${productId} (${JSON.stringify(mutData.errors || mutData)})`);
+  }
+  if (result.userErrors.length > 0) {
+    console.error(`${errorPrefix.toUpperCase()} ERRORS:`, JSON.stringify(result.userErrors, null, 2));
+    throw new Error(`${errorPrefix}: ` + result.userErrors[0].message);
   }
 }
 
@@ -123,13 +141,12 @@ const GET_VARIANTS_FOR_SYNC_QUERY = `
  * never overwritten without a recoverable original on file.
  */
 export async function syncVariantPage(admin, appSettings, { cursor = null, pageSize = 25, shop, reason = "Bulk Sync", query = null, onlyUnsynced = false } = {}) {
-  const response = await admin.graphql(GET_VARIANTS_FOR_SYNC_QUERY, { variables: { cursor, pageSize, query } });
-  const data = await response.json();
+  const data = await graphqlWithRetry(admin, GET_VARIANTS_FOR_SYNC_QUERY, { cursor, pageSize, query }, "Sync page query");
 
   // Defensive check: a query that costs more than Shopify's per-request cap gets
-  // rejected outright (data: null, a top-level error) rather than throttled - previously
-  // unhandled, so this would have thrown a confusing "Cannot read properties of null"
-  // instead of a clear, actionable message pointing at the actual cause.
+  // rejected outright (data: null, a top-level error) - this is a hard cost-cap
+  // rejection, not something retrying helps with, so graphqlWithRetry doesn't retry
+  // it, but we still want a clear, actionable message rather than a null-property crash.
   if (!data.data?.productVariants) {
     const isCostError = data.errors?.some(e => /cost/i.test(e.message || ""));
     throw new Error(
