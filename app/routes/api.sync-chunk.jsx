@@ -1,16 +1,38 @@
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { syncVariantPage } from "../services/syncEngine";
+import { syncVariantPage, syncProductIdBatch } from "../services/syncEngine";
 
 export const action = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const cursor = formData.get("cursor") || null;
+  const onlyUnsynced = formData.get("onlyUnsynced") === "true";
+  const productIdsParam = formData.get("productIds"); // JSON array - present for a scoped (active/collection) sync batch
 
   try {
     const appSettings = await prisma.appSettings.findUnique({ where: { shop: session.shop } });
     if (!appSettings) {
       return new Response(JSON.stringify({ success: false, error: "Settings not found" }), { status: 400, headers: { "Content-Type": "application/json" } });
+    }
+
+    // Scoped sync: the frontend already resolved the full product ID list up front
+    // (via /api/resolve-sync-scope) and is sending us one batch at a time. There's no
+    // Shopify cursor to manage here - hasNextPage is decided by the frontend based on
+    // whether it has more of its own batches left.
+    if (productIdsParam) {
+      let productIds;
+      try {
+        productIds = JSON.parse(productIdsParam);
+      } catch (e) {
+        return new Response(JSON.stringify({ success: false, error: "Invalid productIds" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+
+      const result = await syncProductIdBatch(admin, appSettings, productIds, session.shop, "Scoped Sync");
+      return new Response(JSON.stringify({
+        success: true,
+        variantsProcessed: result.variantsProcessed,
+        productIds: result.productIds,
+      }), { headers: { "Content-Type": "application/json" } });
     }
 
     // 25 was very conservative and meant 1,676+ sequential page requests on a large
@@ -23,7 +45,8 @@ export const action = async ({ request }) => {
       cursor,
       pageSize: 250,
       shop: session.shop,
-      reason: "Bulk API Chunk"
+      reason: "Bulk API Chunk",
+      onlyUnsynced
     });
 
     // Only fetch the total on the first call (cursor null) - the frontend caches it for

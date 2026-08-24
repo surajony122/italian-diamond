@@ -113,7 +113,21 @@ export const loader = async ({ request }) => {
     finalProducts = products.filter(p => p.variants.some(v => !v.goldWeight || parseFloat(v.goldWeight) === 0));
   }
 
-  return { products: finalProducts, q, status };
+  // For the sync scope picker ("Sync by Collection") - a lightweight list, not
+  // re-fetched per keystroke/filter change since collections rarely change.
+  let collections = [];
+  try {
+    const colRes = await admin.graphql(`query { collections(first: 100) { edges { node { id title } } } }`);
+    const colData = await colRes.json();
+    collections = colData.data.collections.edges.map(e => ({
+      id: e.node.id.split("/").pop(),
+      title: e.node.title,
+    }));
+  } catch (e) {
+    console.error("Failed to load collections for sync scope picker:", e);
+  }
+
+  return { products: finalProducts, q, status, collections };
 };
 
 export const action = async ({ request }) => {
@@ -316,7 +330,7 @@ function HeaderWithTooltip({ label, help }) {
 }
 
 export default function Products() {
-  const { products, q, status } = useLoaderData();
+  const { products, q, status, collections } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
   const submit = useSubmit();
@@ -324,9 +338,15 @@ export default function Products() {
 
   const [selectedVariants, setSelectedVariants] = useState([]);
   const [bulkWeight, setBulkWeight] = useState("");
-  
+
   const [queryValue, setQueryValue] = useState(q || "");
   const [statusValue, setStatusValue] = useState(status || "ALL");
+
+  // What "Sync All Prices" actually syncs - lets you target just active products, a
+  // specific collection, or only products that have never been synced, instead of
+  // always paying the cost of the whole catalog.
+  const [syncScope, setSyncScope] = useState("all"); // "all" | "active" | "unsynced" | "collection"
+  const [syncCollectionId, setSyncCollectionId] = useState(collections?.[0]?.id || "");
 
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
@@ -382,7 +402,7 @@ export default function Products() {
     setIsSystemCheckModalOpen(true);
   };
   
-  const startProgressTask = async (endpoint, title) => {
+  const startProgressTask = async (endpoint, title, extraParams = {}) => {
     setProgressModal({ open: true, title, processedProducts: 0, totalProducts: null, variantsProcessed: 0 });
     let hasNextPage = true;
     let cursor = null;
@@ -394,6 +414,7 @@ export default function Products() {
       while (hasNextPage) {
         const formData = new FormData();
         if (cursor) formData.append("cursor", cursor);
+        for (const [key, value] of Object.entries(extraParams)) formData.append(key, value);
 
         const res = await fetch(endpoint, {
           method: "POST",
@@ -430,7 +451,61 @@ export default function Products() {
       submit({ q: queryValue, status: statusValue }); // refresh page
     }
   };
-  
+
+  // For "Active Only" / "By Collection" scopes: status/collection_id aren't valid
+  // filters on Shopify's variants connection (confirmed directly against the live
+  // store), so this resolves the scope to a concrete product ID list ONCE up front,
+  // then syncs it in batches - a different continuation model than the cursor-based
+  // startProgressTask above (there's no Shopify cursor here, just "which IDs are left").
+  const startScopedSync = async (title, { statusFilter = null, collectionId = null } = {}) => {
+    setProgressModal({ open: true, title, processedProducts: 0, totalProducts: null, variantsProcessed: 0 });
+    try {
+      const resolveFormData = new FormData();
+      if (statusFilter) resolveFormData.append("statusFilter", statusFilter);
+      if (collectionId) resolveFormData.append("collectionId", collectionId);
+
+      const resolveRes = await fetch("/api/resolve-sync-scope", { method: "POST", body: resolveFormData });
+      if (!resolveRes.ok) throw new Error("Failed to resolve sync scope");
+      const resolveData = await resolveRes.json();
+      if (!resolveData.success) throw new Error(resolveData.error || "Failed to resolve sync scope");
+
+      const allProductIds = resolveData.productIds;
+      const totalProducts = resolveData.totalProducts;
+
+      if (totalProducts === 0) {
+        shopify.toast.show("No products match this scope - nothing to sync.");
+        return;
+      }
+
+      const BATCH_SIZE = 20;
+      let variantsProcessed = 0;
+      const seenProductIds = new Set();
+
+      for (let i = 0; i < allProductIds.length; i += BATCH_SIZE) {
+        const batch = allProductIds.slice(i, i + BATCH_SIZE);
+        const formData = new FormData();
+        formData.append("productIds", JSON.stringify(batch));
+
+        const res = await fetch("/api/sync-chunk", { method: "POST", body: formData });
+        if (!res.ok) throw new Error("Server error");
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || "Task failed");
+
+        variantsProcessed += data.variantsProcessed;
+        for (const id of batch) seenProductIds.add(id); // count the whole batch as "reached", not just ones with price changes
+
+        setProgressModal({ open: true, title, processedProducts: seenProductIds.size, totalProducts, variantsProcessed });
+      }
+
+      shopify.toast.show(`${title} completed successfully!`);
+    } catch (e) {
+      shopify.toast.show(`Error: ${e.message}`, { isError: true });
+    } finally {
+      setProgressModal(prev => ({ ...prev, open: false }));
+      submit({ q: queryValue, status: statusValue });
+    }
+  };
+
   const handleDropZoneDrop = useCallback(
     (_dropFiles, acceptedFiles, _rejectedFiles) => setImportFile(acceptedFiles[0]),
     [],
@@ -551,7 +626,16 @@ export default function Products() {
 
   const handleGlobalSync = () => {
     setIsSystemCheckModalOpen(false);
-    startProgressTask("/api/sync-chunk", "Syncing All Prices");
+    if (syncScope === "active") {
+      startScopedSync("Syncing Active Products", { statusFilter: "active" });
+    } else if (syncScope === "collection" && syncCollectionId) {
+      const collectionTitle = collections?.find(c => c.id === syncCollectionId)?.title || "Collection";
+      startScopedSync(`Syncing "${collectionTitle}"`, { collectionId: syncCollectionId });
+    } else if (syncScope === "unsynced") {
+      startProgressTask("/api/sync-chunk", "Syncing Not-Yet-Synced Products", { onlyUnsynced: "true" });
+    } else {
+      startProgressTask("/api/sync-chunk", "Syncing All Prices");
+    }
   };
 
   return (
@@ -659,9 +743,13 @@ export default function Products() {
         onClose={() => setIsSystemCheckModalOpen(false)}
         title="Pre-Flight System Check"
         primaryAction={{
-          content: systemCheckResults?.passed ? 'Proceed with Sync' : 'Sync Anyway (Override)',
+          content: (systemCheckResults?.passed ? 'Proceed with Sync' : 'Sync Anyway (Override)') +
+            (syncScope === "collection" && syncCollectionId
+              ? ` (${collections?.find(c => c.id === syncCollectionId)?.title || 'Collection'})`
+              : syncScope !== "all" ? ` (${{active: "Active Only", unsynced: "Not Yet Synced"}[syncScope]})` : ""),
           onAction: handleGlobalSync,
-          destructive: !systemCheckResults?.passed
+          destructive: !systemCheckResults?.passed,
+          disabled: syncScope === "collection" && !syncCollectionId,
         }}
         secondaryActions={[
           {
@@ -673,6 +761,31 @@ export default function Products() {
         <Modal.Section>
           {systemCheckResults && (
             <BlockStack gap="400">
+              <BlockStack gap="200">
+                <Select
+                  label="Sync scope"
+                  options={[
+                    { label: 'All Products', value: 'all' },
+                    { label: 'Active Products Only', value: 'active' },
+                    { label: 'Not Yet Synced Only', value: 'unsynced' },
+                    { label: 'A Specific Collection', value: 'collection' },
+                  ]}
+                  value={syncScope}
+                  onChange={setSyncScope}
+                  helpText="Narrowing the scope skips resyncing everything else, so it finishes faster."
+                />
+                {syncScope === "collection" && (
+                  <Select
+                    label="Collection"
+                    labelHidden
+                    options={(collections || []).map(c => ({ label: c.title, value: c.id }))}
+                    value={syncCollectionId}
+                    onChange={setSyncCollectionId}
+                    placeholder="Choose a collection"
+                  />
+                )}
+              </BlockStack>
+
               {systemCheckResults.passed ? (
                 <Text as="p" tone="success">✅ All systems go! Your store is fully configured and ready for price synchronization.</Text>
               ) : (

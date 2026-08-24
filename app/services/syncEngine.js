@@ -102,6 +102,7 @@ const GET_VARIANTS_FOR_SYNC_QUERY = `
           goldWeight: metafield(namespace: "custom", key: "gold_weight") { value }
           diamondPrice: metafield(namespace: "custom", key: "diamond_price") { value }
           originalPrice: metafield(namespace: "custom", key: "original_price") { value }
+          priceBreakdown: metafield(namespace: "custom", key: "price_breakdown") { value }
         }
       }
     }
@@ -121,7 +122,7 @@ const GET_VARIANTS_FOR_SYNC_QUERY = `
  * gets one written in the SAME mutation that changes its price, so a price is
  * never overwritten without a recoverable original on file.
  */
-export async function syncVariantPage(admin, appSettings, { cursor = null, pageSize = 25, shop, reason = "Bulk Sync", query = null } = {}) {
+export async function syncVariantPage(admin, appSettings, { cursor = null, pageSize = 25, shop, reason = "Bulk Sync", query = null, onlyUnsynced = false } = {}) {
   const response = await admin.graphql(GET_VARIANTS_FOR_SYNC_QUERY, { variables: { cursor, pageSize, query } });
   const data = await response.json();
 
@@ -150,6 +151,18 @@ export async function syncVariantPage(admin, appSettings, { cursor = null, pageS
 
     // ONLY process ACTIVE products
     if (variant.product.status !== "ACTIVE") continue;
+
+    // "Not Yet Synced" scope: skip anything that already has a real price_breakdown -
+    // no metafield presence check isn't quite enough since a corrupt/unparseable value
+    // shouldn't count as "already synced".
+    if (onlyUnsynced && variant.priceBreakdown?.value) {
+      try {
+        JSON.parse(variant.priceBreakdown.value);
+        continue; // parses fine - genuinely already synced, skip it
+      } catch (e) {
+        // falls through and gets (re)synced below
+      }
+    }
 
     let effectiveGoldWeight = null;
     if (variant.goldWeight && variant.goldWeight.value) {
@@ -321,6 +334,78 @@ export async function syncVariantPage(admin, appSettings, { cursor = null, pageS
     syncedCount: variantsToUpdate.length,
     productIds
   };
+}
+
+/**
+ * Resolves a sync scope (status filter and/or a specific collection) into a concrete
+ * list of numeric product IDs. `status`/`collection_id` are NOT valid search fields on
+ * the productVariants connection (confirmed directly against the live store - Shopify
+ * returns an "Invalid search field" warning), only on the products connection, so
+ * scoped syncs go through this two-step resolve-then-sync path rather than filtering
+ * productVariants directly.
+ *
+ * @param statusFilter "active" | null/"all" (no status restriction)
+ * @param collectionId numeric collection id, or null for no collection restriction
+ * @returns array of numeric product id strings (empty array if the scope matches nothing)
+ */
+export async function resolveScopeToProductIds(admin, { statusFilter = null, collectionId = null } = {}) {
+  const filters = [];
+  if (statusFilter && statusFilter !== "all") filters.push(`status:${statusFilter}`);
+  if (collectionId) filters.push(`collection_id:${collectionId}`);
+  const queryStr = filters.length > 0 ? filters.join(" AND ") : null;
+
+  const QUERY = `
+    query GetProductIds($q: String, $cursor: String) {
+      products(first: 250, query: $q, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        edges { node { id } }
+      }
+    }
+  `;
+
+  let ids = [];
+  let hasNextPage = true;
+  let cursor = null;
+  while (hasNextPage) {
+    const res = await admin.graphql(QUERY, { variables: { q: queryStr, cursor } });
+    const data = await res.json();
+    if (!data.data?.products) {
+      throw new Error(`Scope resolution query failed: ${JSON.stringify(data.errors || data)}`);
+    }
+    ids.push(...data.data.products.edges.map(e => e.node.id.split("/").pop()));
+    hasNextPage = data.data.products.pageInfo.hasNextPage;
+    cursor = data.data.products.pageInfo.endCursor;
+  }
+  return ids;
+}
+
+/**
+ * Syncs every variant belonging to one batch of specific product IDs (built as an
+ * OR'd `product_id:` query, confirmed working directly against the live store), rather
+ * than the whole catalog. Used to sync a "page" of a resolved scope's product list.
+ */
+export async function syncProductIdBatch(admin, appSettings, productIds, shop, reason = "Bulk Sync") {
+  if (productIds.length === 0) {
+    return { syncedCount: 0, variantsProcessed: 0, productIds: [] };
+  }
+  const queryStr = productIds.map(id => `product_id:${id}`).join(" OR ");
+
+  let hasNextPage = true;
+  let cursor = null;
+  let syncedCount = 0;
+  let variantsProcessed = 0;
+  const productIdsSeen = new Set();
+
+  while (hasNextPage) {
+    const result = await syncVariantPage(admin, appSettings, { cursor, pageSize: 250, shop, reason, query: queryStr });
+    syncedCount += result.syncedCount;
+    variantsProcessed += result.variantsProcessed;
+    result.productIds.forEach(id => productIdsSeen.add(id));
+    hasNextPage = result.hasNextPage;
+    cursor = result.nextCursor;
+  }
+
+  return { syncedCount, variantsProcessed, productIds: [...productIdsSeen] };
 }
 
 /**
