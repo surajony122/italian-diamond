@@ -27,7 +27,7 @@ import { ChevronDownIcon, ChevronUpIcon, ExportIcon, ImportIcon, InfoIcon, CashD
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { calculateFinalPrice, parseDiamondText } from "../services/pricing";
-import { runBulkSync } from "../services/syncEngine";
+import { runBulkSync, syncSingleProduct } from "../services/syncEngine";
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
   const url = new URL(request.url);
@@ -126,6 +126,23 @@ export const action = async ({ request }) => {
     if (!appSettings) return null;
     await runBulkSync(admin, appSettings);
     return null;
+  }
+
+  if (intent === "sync_product") {
+    const productId = formData.get("productId");
+    let appSettings = await prisma.appSettings.findUnique({ where: { shop: session.shop } });
+    if (!appSettings) return { success: false, message: "Settings not found" };
+    try {
+      const result = await syncSingleProduct(admin, appSettings, productId, session.shop);
+      return {
+        success: true,
+        message: result.syncedCount > 0
+          ? `Synced ${result.syncedCount} variant(s) for this product.`
+          : `No variants updated - check that Gold Weight is set for at least one variant.`
+      };
+    } catch (e) {
+      return { success: false, message: `Sync failed: ${e.message}` };
+    }
   }
 
   if (intent === "save_variant") {
@@ -854,7 +871,7 @@ function ProductGroup({ product, fetcher, selectedVariants, onToggleSelect, onTo
             </div>
           </InlineStack>
         </td>
-        <td colSpan="6" style={{padding: '16px'}}>
+        <td colSpan="5" style={{padding: '16px'}}>
           <InlineStack gap="300" align="start" blockAlign="center">
             <Text variant="bodyMd" fontWeight="bold">{product.title}</Text>
             <Badge tone={product.status === 'ACTIVE' ? 'success' : 'info'}>
@@ -864,6 +881,16 @@ function ProductGroup({ product, fetcher, selectedVariants, onToggleSelect, onTo
               <Badge tone="warning">NEW (Needs Weight)</Badge>
             )}
           </InlineStack>
+        </td>
+        <td style={{padding: '16px', textAlign: 'right'}} onClick={(e) => e.stopPropagation()}>
+          <Button
+            size="micro"
+            icon={CashDollarIcon}
+            loading={fetcher.state !== "idle" && fetcher.formData?.get("intent") === "sync_product" && fetcher.formData?.get("productId") === product.id}
+            onClick={() => fetcher.submit({ intent: "sync_product", productId: product.id }, { method: "POST" })}
+          >
+            Sync This Product
+          </Button>
         </td>
       </tr>
       {isOpen && product.variants.map((variant, index) => (

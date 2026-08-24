@@ -40,8 +40,8 @@ async function bulkUpdateProductVariants(admin, productId, variantsChunk, errorP
 }
 
 const GET_VARIANTS_FOR_SYNC_QUERY = `
-  query GetVariants($cursor: String, $pageSize: Int!) {
-    productVariants(first: $pageSize, after: $cursor) {
+  query GetVariants($cursor: String, $pageSize: Int!, $query: String) {
+    productVariants(first: $pageSize, after: $cursor, query: $query) {
       pageInfo { hasNextPage endCursor }
       edges {
         node {
@@ -88,8 +88,8 @@ const GET_VARIANTS_FOR_SYNC_QUERY = `
  * gets one written in the SAME mutation that changes its price, so a price is
  * never overwritten without a recoverable original on file.
  */
-export async function syncVariantPage(admin, appSettings, { cursor = null, pageSize = 25, shop, reason = "Bulk Sync" } = {}) {
-  const response = await admin.graphql(GET_VARIANTS_FOR_SYNC_QUERY, { variables: { cursor, pageSize } });
+export async function syncVariantPage(admin, appSettings, { cursor = null, pageSize = 25, shop, reason = "Bulk Sync", query = null } = {}) {
+  const response = await admin.graphql(GET_VARIANTS_FOR_SYNC_QUERY, { variables: { cursor, pageSize, query } });
   const data = await response.json();
 
   // Defensive check: a query that costs more than Shopify's per-request cap gets
@@ -309,6 +309,39 @@ export async function runBulkSync(admin, appSettings, { pageSize = 250, reason =
   }
 
   return syncedCount;
+}
+
+/**
+ * Syncs every variant of exactly one product, immediately, without touching the rest
+ * of the catalog or waiting on a full-catalog run. Reuses syncVariantPage as-is (via
+ * Shopify's `product_id:` query filter on the variants connection) rather than
+ * reimplementing the pricing/backup logic a third time - same math, same safety net,
+ * same audit log, just scoped to one product.
+ */
+export async function syncSingleProduct(admin, appSettings, productId, shop) {
+  // productId may be a full GID (gid://shopify/Product/123) or a bare numeric id
+  const numericId = productId.toString().split("/").pop();
+
+  let hasNextPage = true;
+  let cursor = null;
+  let syncedCount = 0;
+  let variantsProcessed = 0;
+
+  while (hasNextPage) {
+    const result = await syncVariantPage(admin, appSettings, {
+      cursor,
+      pageSize: 250, // a single product will never realistically have more variants than this
+      shop,
+      reason: "Single Product Sync",
+      query: `product_id:${numericId}`,
+    });
+    syncedCount += result.syncedCount;
+    variantsProcessed += result.variantsProcessed;
+    hasNextPage = result.hasNextPage;
+    cursor = result.nextCursor;
+  }
+
+  return { syncedCount, variantsProcessed };
 }
 
 /**
