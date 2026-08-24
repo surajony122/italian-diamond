@@ -11,15 +11,25 @@ const BULK_UPDATE_MUTATION = `
 
 /**
  * Runs productVariantsBulkUpdate for one product, with a short retry-with-backoff on
- * Shopify's rate-limit ("THROTTLED") response. Previously there was no handling for
- * this at all - a throttled response has `data: null`, so reading
- * `mutData.data.productVariantsBulkUpdate.userErrors` would throw a confusing
- * "Cannot read properties of null" instead of a clear, retryable error.
+ * Shopify's rate-limit ("THROTTLED") response AND on raw network-level failures
+ * ("fetch failed" / connection reset) - the latter previously unhandled at all, which
+ * surfaced as a hard crash killing the whole page's sync rather than a retryable blip.
  */
 async function bulkUpdateProductVariants(admin, productId, variantsChunk, errorPrefix, { maxAttempts = 3 } = {}) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const mutRes = await admin.graphql(BULK_UPDATE_MUTATION, { variables: { productId, variants: variantsChunk } });
-    const mutData = await mutRes.json();
+    let mutData;
+    try {
+      const mutRes = await admin.graphql(BULK_UPDATE_MUTATION, { variables: { productId, variants: variantsChunk } });
+      mutData = await mutRes.json();
+    } catch (e) {
+      // Network-level failure (fetch failed, connection reset, etc.) - retry rather
+      // than letting one transient blip abort the entire page's sync.
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+        continue;
+      }
+      throw new Error(`${errorPrefix}: network error for product ${productId} after ${maxAttempts} attempts: ${e.message}`);
+    }
 
     const isThrottled = mutData.errors?.some(e => e.extensions?.code === "THROTTLED");
     if (isThrottled && attempt < maxAttempts) {
@@ -37,6 +47,29 @@ async function bulkUpdateProductVariants(admin, productId, variantsChunk, errorP
     }
     return;
   }
+}
+
+/**
+ * Runs async fn over items with at most `limit` concurrent in flight, instead of firing
+ * everything at once. A single sync page can span dozens of distinct products (up to
+ * 250 variants/page); unbounded Promise.all fired that many simultaneous outbound
+ * connections from one Render instance and caused raw network-level "fetch failed"
+ * errors under load - confirmed directly from production logs.
+ */
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, worker);
+  await Promise.all(workers);
+  return results;
 }
 
 const GET_VARIANTS_FOR_SYNC_QUERY = `
@@ -261,15 +294,14 @@ export async function syncVariantPage(admin, appSettings, { cursor = null, pageS
       });
     }
 
-    // Run the per-product mutations concurrently instead of one-at-a-time - a single
-    // 25-variant page can span many distinct products, and awaiting each mutation
-    // sequentially was the dominant cost of a sync (N network round-trips per page
-    // instead of ~1). bulkUpdateProductVariants has its own retry-on-throttle, so
-    // this doesn't just trade speed for reliability.
-    await Promise.all(
-      Object.entries(grouped).map(([productId, variantsChunk]) =>
-        bulkUpdateProductVariants(admin, productId, variantsChunk, "Failed to sync variants")
-      )
+    // Run the per-product mutations concurrently (capped, not unbounded - a single
+    // 250-variant page can span dozens of distinct products, and firing all of them at
+    // once caused raw network-level failures in production) instead of one-at-a-time,
+    // which was the dominant cost of a sync (N sequential round-trips per page).
+    await mapWithConcurrency(
+      Object.entries(grouped),
+      10,
+      ([productId, variantsChunk]) => bulkUpdateProductVariants(admin, productId, variantsChunk, "Failed to sync variants")
     );
   }
 
@@ -421,10 +453,10 @@ export async function restoreOriginalPrices(admin, shop) {
         grouped[update.productId].push({ id: update.id, price: update.price, compareAtPrice: null });
       }
 
-      await Promise.all(
-        Object.entries(grouped).map(([productId, variantsChunk]) =>
-          bulkUpdateProductVariants(admin, productId, variantsChunk, "Failed to restore variants")
-        )
+      await mapWithConcurrency(
+        Object.entries(grouped),
+        10,
+        ([productId, variantsChunk]) => bulkUpdateProductVariants(admin, productId, variantsChunk, "Failed to restore variants")
       );
       restoredCount += variantsToUpdate.length;
     }
