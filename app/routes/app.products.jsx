@@ -31,13 +31,13 @@ import { calculateFinalPrice, parseDiamondText } from "../services/pricing";
 import { runBulkSync, syncSingleProduct } from "../services/syncEngine";
 const GET_PRODUCTS_LIST_QUERY = `
   query getProducts($queryStr: String) {
-    products(first: 50, query: $queryStr) {
+    products(first: 20, query: $queryStr) {
       edges {
         node {
           id
           title
           status
-          variants(first: 50) {
+          variants(first: 30) {
             edges {
               node {
                 id
@@ -83,20 +83,21 @@ export const loader = async ({ request }) => {
   if (status !== "ALL" && status !== "NEEDS_WEIGHT") searchQuery.push(`status:${status}`);
   const queryStr = searchQuery.length > 0 ? searchQuery.join(" AND ") : "";
 
-  // This page's own query has no error handling at all previously - a GraphQL-level
-  // failure (e.g. rate-limited right after a heavy sync just finished hammering the
-  // API, which is exactly the sequence that surfaced this) crashed the whole page with
-  // an unrecoverable "Application Error" instead of a retry or a graceful message.
   let data = null;
   let loadError = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // Increase max attempts and backoff heavily since this fires immediately after a 
+  // massive bulk sync that drains the Shopify API bucket completely.
+  const maxAttempts = 6;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const response = await admin.graphql(GET_PRODUCTS_LIST_QUERY, { variables: { queryStr: queryStr || null } });
       const json = await response.json();
       if (json.errors) {
-        const isThrottled = json.errors.some(e => e.extensions?.code === "THROTTLED");
-        if (isThrottled && attempt < 3) {
-          await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+        const isThrottled = json.errors.some(e => e.extensions?.code === "THROTTLED" || /cost/i.test(e.message));
+        if (isThrottled && attempt < maxAttempts) {
+          // Exponential backoff: 1s, 2s, 4s, 8s, 16s - gives the Shopify bucket real time to refill
+          const delay = 1000 * 2 ** (attempt - 1);
+          await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }
         throw new Error(JSON.stringify(json.errors));
@@ -105,14 +106,15 @@ export const loader = async ({ request }) => {
       break;
     } catch (e) {
       loadError = e.message;
-      if (attempt >= 3) break;
-      await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+      if (attempt >= maxAttempts) break;
+      const delay = 1000 * 2 ** (attempt - 1);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 
   if (!data) {
     console.error("Products page load failed after retries:", loadError);
-    return { products: [], q, status, collections: [], loadError: "Failed to load products - this can happen right after a large sync while Shopify's API is still catching up. Try refreshing in a moment." };
+    return { products: [], q, status, collections: [], loadError: "Failed to load products - the Shopify API is still catching up from the sync. Try refreshing the page in 15 seconds." };
   }
 
   const products = data.products.edges.map(productEdge => {
