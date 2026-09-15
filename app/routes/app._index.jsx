@@ -78,8 +78,9 @@ export const action = async ({ request }) => {
 
     const goldApiMode = formData.get("goldApiMode");
     const goldApiKey = formData.get("goldApiKey") || "";
+    const goldApiProvider = formData.get("goldApiProvider") || "goldapi";
 
-    const dataToUpdate = { goldApiMode, goldApiKey };
+    const dataToUpdate = { goldApiMode, goldApiKey, goldApiProvider };
     if (!isNaN(goldRate)) dataToUpdate.goldRate = goldRate;
 
     settings = await prisma.appSettings.update({
@@ -92,12 +93,12 @@ export const action = async ({ request }) => {
 
   if (intent === "fetch_rate") {
     try {
-      const liveRate = await fetchLiveGoldRate(settings.goldApiKey);
+      const liveRate = await fetchLiveGoldRate(settings.goldApiKey, settings.goldApiProvider);
       settings = await prisma.appSettings.update({
         where: { shop: session.shop },
         data: { goldRate: liveRate },
       });
-      return { success: true, settings, message: "Live gold rate fetched successfully" };
+      return { success: true, settings, message: `Live gold rate fetched successfully (${settings.goldApiProvider === 'ibja' ? 'IBJA' : 'GoldAPI.io'})` };
     } catch (e) {
       return { success: false, message: "Failed to fetch live rate. Using fallback." };
     }
@@ -105,9 +106,14 @@ export const action = async ({ request }) => {
 
   if (intent === "sync_prices") {
     try {
-      if (settings.goldApiMode === 'auto' && settings.goldApiKey) {
+      // IBJA needs no API key, so the gate only requires a key when GoldAPI.io is
+      // the configured provider - a hard `&& settings.goldApiKey` check here would
+      // silently skip the live fetch for every IBJA-mode shop.
+      const canAutoFetch = settings.goldApiMode === 'auto' &&
+        (settings.goldApiProvider === 'ibja' || !!settings.goldApiKey);
+      if (canAutoFetch) {
         try {
-          const liveRate = await fetchLiveGoldRate(settings.goldApiKey);
+          const liveRate = await fetchLiveGoldRate(settings.goldApiKey, settings.goldApiProvider);
           settings = await prisma.appSettings.update({
             where: { shop: session.shop },
             data: { goldRate: liveRate },
@@ -238,12 +244,14 @@ export default function Index() {
   const [goldApiKey, setGoldApiKey] = useState(settings.goldApiKey || "");
   const [goldRate, setGoldRate] = useState(settings.goldRate?.toString() || "");
   const [goldApiMode, setGoldApiMode] = useState(settings.goldApiMode || "manual");
+  const [goldApiProvider, setGoldApiProvider] = useState(settings.goldApiProvider || "goldapi");
 
   useEffect(() => {
     setGoldApiKey(settings.goldApiKey || "");
     setGoldRate(settings.goldRate?.toString() || "");
     setGoldApiMode(settings.goldApiMode || "manual");
-  }, [settings.goldApiKey, settings.goldRate, settings.goldApiMode]);
+    setGoldApiProvider(settings.goldApiProvider || "goldapi");
+  }, [settings.goldApiKey, settings.goldRate, settings.goldApiMode, settings.goldApiProvider]);
 
   if (navigation.state === "loading" && navigation.location.pathname === "/app") {
     return (
@@ -376,7 +384,9 @@ export default function Index() {
               <InlineStack align="space-between">
                 <Text variant="headingMd" as="h2">Sync Status</Text>
                 {settings.goldApiMode === 'auto' ? (
-                  <Badge tone="success" progress="complete">Live API Active</Badge>
+                  <Badge tone="success" progress="complete">
+                    Live: {settings.goldApiProvider === 'ibja' ? 'IBJA (India)' : 'GoldAPI.io'}
+                  </Badge>
                 ) : (
                   <Badge tone="info">Manual Mode</Badge>
                 )}
@@ -512,14 +522,32 @@ export default function Index() {
                   onChange={setGoldApiMode}
                 />
                 
-                <TextField
-                  label="GoldAPI.io Key (if Auto Fetch)"
-                  name="goldApiKey"
-                  value={goldApiKey}
-                  onChange={setGoldApiKey}
-                  placeholder="goldapi-xxxxxxxxxxxxxx-io"
-                  autoComplete="off"
-                />
+                {goldApiMode === 'auto' && (
+                  <Select
+                    label="Gold Rate Provider"
+                    name="goldApiProvider"
+                    options={[
+                      { label: 'GoldAPI.io (international spot rate, requires API key)', value: 'goldapi' },
+                      { label: 'IBJA - India Bullion & Jewellers Association (India local rate, no key needed)', value: 'ibja' },
+                    ]}
+                    value={goldApiProvider}
+                    onChange={setGoldApiProvider}
+                    helpText={goldApiProvider === 'ibja'
+                      ? "Free, no API key required. Reflects India's local retail/bullion rate (matches what you'd see on jewellers' sites), unlike GoldAPI.io's raw international rate."
+                      : "Requires a GoldAPI.io key below. Returns the international spot price converted to INR - this can run noticeably lower than India's local retail rate."}
+                  />
+                )}
+
+                {goldApiMode === 'auto' && goldApiProvider === 'goldapi' && (
+                  <TextField
+                    label="GoldAPI.io Key"
+                    name="goldApiKey"
+                    value={goldApiKey}
+                    onChange={setGoldApiKey}
+                    placeholder="goldapi-xxxxxxxxxxxxxx-io"
+                    autoComplete="off"
+                  />
+                )}
 
                 {goldApiMode === 'manual' && (
                   <div style={{maxWidth: '260px'}}>

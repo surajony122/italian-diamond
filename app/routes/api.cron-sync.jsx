@@ -38,7 +38,7 @@ export const action = async ({ request }) => {
 
       // Auto fetch live rate if mode is "auto"
       if (settings.goldApiMode === "auto") {
-        const liveRate = await fetchLiveGoldRate(settings.goldApiKey);
+        const liveRate = await fetchLiveGoldRate(settings.goldApiKey, settings.goldApiProvider);
         settings.goldRate = liveRate;
         await prisma.appSettings.update({
           where: { shop: settings.shop },
